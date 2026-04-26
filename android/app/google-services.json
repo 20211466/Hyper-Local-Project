@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "642891163198",
+    "project_id": "hyper-local-project",
+    "storage_bucket": "hyper-local-project.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:642891163198:android:9f9aa1566942316273536f",
+        "android_client_info": {
+          "package_name": "com.example.hyper_local_project"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDc1az9QYQru0gO0ZQRptrIWbCJPwuhtfM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
