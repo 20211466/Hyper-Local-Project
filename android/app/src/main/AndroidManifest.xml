@@ -5,7 +5,7 @@
     <application
         android:label="hyper_local_project"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/launcher_icon">
         <meta-data android:name="com.google.android.geo.API_KEY"
                    android:value="AIzaSyCqzRNiYXHou8AOIaRQH5n1u4RHbkpILaY"/>
         <activity

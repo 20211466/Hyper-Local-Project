@@ -1,21 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
-
-// 🚀 경로 수정: views 폴더 안에 있는 파일을 불러오도록 변경했습니다.
-import 'views/map_screen.dart'; 
+import 'views/main_shell.dart'; // 새로 만든 쉘을 불러옵니다.
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // 파이어베이스 초기화
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  runApp(const MaterialApp(
+  runApp(MaterialApp(
     debugShowCheckedModeBanner: false,
-    // 이제 views/map_screen.dart의 MapScreen을 정상적으로 인식합니다.
-    home: MapScreen(), 
+    title: 'Hyper-Local',
+    theme: ThemeData(
+      primarySwatch: Colors.green,
+      useMaterial3: true, // 최신 UI 스타일 적용
+    ),
+    home: const MainShell(), // 입구를 MainShell로 변경합니다.
   ));
 }
