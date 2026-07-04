@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
+import '../models/gathering_model.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});

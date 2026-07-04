@@ -1,19 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
-import 'views/main_shell.dart'; // 새로 만든 쉘을 불러옵니다.
+import 'views/main_shell.dart'; 
+import 'views/gathering_list_screen.dart'; 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  runApp(MaterialApp(
+  runApp(const MaterialApp(
     debugShowCheckedModeBanner: false,
-    title: 'Hyper-Local',
-    theme: ThemeData(
-      primarySwatch: Colors.green,
-      useMaterial3: true, // 최신 UI 스타일 적용
-    ),
-    home: const MainShell(), // 입구를 MainShell로 변경합니다.
+    home: MainShell(), 
   ));
 }

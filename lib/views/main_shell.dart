@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'map_screen.dart';
+import 'map_screen.dart'; 
+import 'gathering_list_screen.dart'; // 💡 팀원이 새로 만든 목록 화면 가져오기
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -9,57 +10,35 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
-  int _selectedIndex = 0; // 현재 선택된 탭 번호
+  int _selectedIndex = 0;
 
-  final GlobalKey<MapScreenState> _mapKey = GlobalKey();
-
-  // 🚀 표시할 화면들 (팀원들이 각자 만들면 여기에 하나씩 추가)
-  late final List<Widget> _screens = [
-    MapScreen(key: _mapKey),
-    const MapScreen(), // 0번: 팀장님의 지도 화면
-    const Center(child: Text("리스트 화면 (준비중)")), // 1번
-    const Center(child: Text("채팅 화면 (준비중)")), // 2번
-    const Center(child: Text("내 정보 (준비중)")), // 3번
+  // 💡 팀장님의 4개 탭 구조를 유지하되, 1번 인덱스에 팀원의 목록 화면을 매핑합니다.
+  final List<Widget> _screens = [
+    const MapScreen(),                    // 0번 탭: 지도
+    GatheringListScreen(),                // 1번 탭: 모임 목록 (팀원 코드)
+    const Center(child: Text('채팅 내역')), // 2번 탭: 채팅
+    const Center(child: Text('내 정보')),  // 3번 탭: 내 정보
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 🚀 IndexedStack을 쓰면 지도가 초기화되지 않고 상태가 유지됩니다!
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _screens,
-      ),
-
-      // 🚀 플로팅 액션 버튼 (번개 만들기)
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          if (_selectedIndex == 0) {
-            _mapKey.currentState?.openCreationSheet();
-          } else {
-            setState(() => _selectedIndex = 0);
-          }
-          // TODO: 지도 화면의 모임 생성 함수와 연결 예정
-          print("번개 모임 생성 버튼 클릭!");
-        },
-        label: const Text("번개 열기", style: TextStyle(fontWeight: FontWeight.bold)),
-        icon: const Icon(Icons.bolt),
-        backgroundColor: Colors.amber,
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-
-      // 🚀 하단 네비게이션 바
+      body: _screens[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
         currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
-        type: BottomNavigationBarType.fixed, // 아이콘 4개 이상일 때 필수
         selectedItemColor: Colors.green,
         unselectedItemColor: Colors.grey,
+        onTap: (index) {
+          setState(() {
+            _selectedIndex = index;
+          });
+        },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.map), label: '지도'),
-          BottomNavigationBarItem(icon: Icon(Icons.list_alt), label: '목록'),
-          BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), label: '채팅'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: '내 정보'),
+          BottomNavigationBarItem(icon: Icon(Icons.list), label: '모임 목록'), // 💡 탭 메뉴 추가
+          BottomNavigationBarItem(icon: Icon(Icons.chat), label: '채팅'),
+          BottomNavigationBarItem(icon: Icon(Icons.person), label: '내 정보'),
         ],
       ),
     );
