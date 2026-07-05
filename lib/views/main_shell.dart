@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'map_screen.dart'; 
 import 'gathering_list_screen.dart'; // 💡 팀원이 새로 만든 목록 화면 가져오기
+import '../screens/my_meetups_screen.dart'; // 경로가 맞는지 확인해 주세요!
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -14,10 +15,10 @@ class _MainShellState extends State<MainShell> {
 
   // 💡 팀장님의 4개 탭 구조를 유지하되, 1번 인덱스에 팀원의 목록 화면을 매핑합니다.
   final List<Widget> _screens = [
-    const MapScreen(),                    // 0번 탭: 지도
-    GatheringListScreen(),                // 1번 탭: 모임 목록 (팀원 코드)
+    const MapScreen(),                     // 0번 탭: 지도
+    GatheringListScreen(),                 // 1번 탭: 모임 목록 (팀원 코드)
     const Center(child: Text('채팅 내역')), // 2번 탭: 채팅
-    const Center(child: Text('내 정보')),  // 3번 탭: 내 정보
+    const MyMeetupsScreen()                // 3번 탭: 내 정보
   ];
 
   @override

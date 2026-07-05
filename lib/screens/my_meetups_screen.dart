@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import '../models/meetup.dart';
+// import '../models/meetup.dart'; // 💡 더 이상 중간 변환 모델이 필요 없으므로 삭제/주석 처리해도 됩니다.
 import '../services/auth_service.dart';
 import '../widgets/meetup_card.dart';
 
@@ -11,6 +11,11 @@ class MyMeetupsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return const Scaffold(
+        body: Center(child: Text('로그인이 필요합니다.')),
+      );
+    }
     final authService = AuthService();
     final firestore = FirebaseFirestore.instance;
 
@@ -45,10 +50,10 @@ class MyMeetupsScreen extends StatelessWidget {
                   CircleAvatar(
                     radius: 28,
                     backgroundColor: Colors.green[50],
-                    backgroundImage: user?.photoURL != null
-                        ? NetworkImage(user!.photoURL!)
+                    backgroundImage: user.photoURL != null
+                        ? NetworkImage(user.photoURL!)
                         : null,
-                    child: user?.photoURL == null
+                    child: user.photoURL == null
                         ? const Icon(Icons.person, color: Colors.green, size: 28)
                         : null,
                   ),
@@ -58,14 +63,14 @@ class MyMeetupsScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          user?.displayName?.isNotEmpty == true
-                              ? user!.displayName!
+                          user.displayName?.isNotEmpty == true
+                              ? user.displayName!
                               : '닉네임 없음',
                           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          user?.email ?? '',
+                          user.email ?? '',
                           style: const TextStyle(color: Colors.black54),
                         ),
                       ],
@@ -81,14 +86,14 @@ class MyMeetupsScreen extends StatelessWidget {
                   _MeetupStreamList(
                     stream: firestore
                         .collection('meetings')
-                        .where('creatorId', isEqualTo: user?.uid)
+                        .where('creatorId', isEqualTo: user.uid)
                         .snapshots(),
                     emptyMessage: '아직 만든 번개 모임이 없어요.\n지도에서 새로운 번개를 열어보세요!',
                   ),
                   _MeetupStreamList(
                     stream: firestore
                         .collection('meetings')
-                        .where('participants', arrayContains: user?.uid)
+                        .where('participants', arrayContains: user.uid)
                         .snapshots(),
                     emptyMessage: '아직 참여한 번개 모임이 없어요.\n지도에서 마음에 드는 번개에 참여해보세요!',
                   ),
@@ -103,14 +108,15 @@ class MyMeetupsScreen extends StatelessWidget {
 }
 
 class _MeetupStreamList extends StatelessWidget {
-  final Stream<QuerySnapshot> stream;
+  // 💡 타입을 <Map<String, dynamic>>으로 명확하게 지정해서 에러를 원천 차단합니다.
+  final Stream<QuerySnapshot<Map<String, dynamic>>> stream;
   final String emptyMessage;
 
   const _MeetupStreamList({required this.stream, required this.emptyMessage});
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: stream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -139,10 +145,11 @@ class _MeetupStreamList extends StatelessWidget {
           itemCount: docs.length,
           separatorBuilder: (_, __) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
-            final meetup = Meetup.fromFirestore(
-              docs[index] as DocumentSnapshot<Map<String, dynamic>>,
-            );
-            return MeetupCard(meetup: meetup);
+            // 💡 복잡한 모델 변환 없이 파이어베이스 데이터를 바로 꺼냅니다.
+            final data = docs[index].data();
+            
+            // 💡 업그레이드된 MeetupCard에 맞게 meetupData 파라미터로 전달합니다!
+            return MeetupCard(meetupData: data);
           },
         );
       },

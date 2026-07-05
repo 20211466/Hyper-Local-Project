@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // 💡 추가: 내 ID를 가져오기 위해 필요합니다!
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'dart:ui' as ui;
@@ -191,8 +192,15 @@ class MapScreenState extends State<MapScreen> {
               height: 55,
               child: ElevatedButton(
                 onPressed: current < max ? () async {
-                  await _firestore.collection('meetings').doc(docId).update({'currentParticipants': FieldValue.increment(1)});
-                  if (mounted) Navigator.pop(context);
+                  final user = FirebaseAuth.instance.currentUser;
+                  if (user != null) {
+                    await _firestore.collection('meetings').doc(docId).update({
+                      'currentParticipants': FieldValue.increment(1),
+                      // 💡 배열에 내 UID 추가 (내가 참여한 모임 탭에 뜨게 됨!)
+                      'participants': FieldValue.arrayUnion([user.uid]) 
+                    });
+                    if (mounted) Navigator.pop(context);
+                  }
                 } : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: current < max ? Colors.amber[400] : Colors.grey[300],
@@ -212,7 +220,7 @@ class MapScreenState extends State<MapScreen> {
     ).then((_) => setState(() => _isSheetOpen = false));
   }
 
-  // 🚀 [모임 생성 창] 기존 로직 완벽 유지
+  // 🚀 [모임 생성 창]
   void _showInputSheet(LatLng pos) async {
     if (_isSheetOpen) return;
     setState(() => _isSheetOpen = true);
@@ -227,12 +235,37 @@ class MapScreenState extends State<MapScreen> {
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start, // 왼쪽 정렬
               children: [
-                const Text('⚡ 새로운 번개 만들기', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const Center(child: Text('⚡ 새로운 번개 만들기', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+                const SizedBox(height: 20),
+                
+                // 💡 [복구 완료] 카테고리 선택 UI
+                const Text('어떤 모임인가요?', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.grey)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8.0,
+                  children: _categories.map((category) {
+                    return ChoiceChip(
+                      label: Text(category),
+                      selected: _selectedCategory == category,
+                      selectedColor: Colors.green[200],
+                      onSelected: (bool selected) {
+                        setSheetState(() {
+                          if (selected) {
+                            _selectedCategory = category;
+                          }
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
                 const SizedBox(height: 15),
+
                 TextField(controller: _titleController, decoration: const InputDecoration(labelText: '제목')),
                 TextField(controller: _noteController, decoration: const InputDecoration(labelText: '설명')),
                 const SizedBox(height: 20),
+                
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -252,6 +285,7 @@ class MapScreenState extends State<MapScreen> {
                   ],
                 ),
                 ListTile(
+                  contentPadding: EdgeInsets.zero,
                   title: Text(_selectedTime == null ? "마감 시간 선택" : "마감: ${_selectedTime!.format(context)}"),
                   trailing: const Icon(Icons.access_time, color: Colors.green), 
                   onTap: () async {
@@ -260,27 +294,43 @@ class MapScreenState extends State<MapScreen> {
                   },
                 ),
                 const SizedBox(height: 20),
-                ElevatedButton(
-                  onPressed: () async {
-                    if (_titleController.text.isNotEmpty && _selectedTime != null) {
-                      final now = DateTime.now();
-                      final d = DateTime(now.year, now.month, now.day, _selectedTime!.hour, _selectedTime!.minute);
-                      await _firestore.collection('meetings').add({
-                        'title': _titleController.text,
-                        'category': _selectedCategory,
-                        'description': _noteController.text,
-                        'time': _selectedTime!.format(context),
-                        'lat': pos.latitude,
-                        'lng': pos.longitude,
-                        'currentParticipants': 1, 
-                        'maxParticipants': _maxParticipants, 
-                        'deadline': Timestamp.fromDate(d),
-                      });
-                      _titleController.clear(); _noteController.clear();
-                      if (mounted) Navigator.pop(context);
-                    }
-                  },
-                  child: const Text("번개 생성"),
+                
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      if (_titleController.text.isNotEmpty && _selectedTime != null) {
+                        final now = DateTime.now();
+                        final d = DateTime(now.year, now.month, now.day, _selectedTime!.hour, _selectedTime!.minute);
+                        final user = FirebaseAuth.instance.currentUser; // 현재 유저 가져오기
+
+                        await _firestore.collection('meetings').add({
+                          'title': _titleController.text,
+                          'category': _selectedCategory, // 💡 선택된 카테고리 정상 저장
+                          'description': _noteController.text,
+                          'time': _selectedTime!.format(context),
+                          'lat': pos.latitude,
+                          'lng': pos.longitude,
+                          'currentParticipants': 1, 
+                          'maxParticipants': _maxParticipants, 
+                          'deadline': Timestamp.fromDate(d),
+                          'creatorId': user?.uid ?? '', // 💡 이 모임 만든 사람 ID 저장 (내가 만든 모임 탭 연결!)
+                          'participants': user?.uid != null ? [user!.uid] : [], // 💡 방장 자동 참여
+                        });
+                        
+                        _titleController.clear(); 
+                        _noteController.clear();
+                        if (mounted) Navigator.pop(context);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text("번개 생성", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
                 ),
                 const SizedBox(height: 30),
               ],
@@ -295,7 +345,6 @@ class MapScreenState extends State<MapScreen> {
     });
   }
 
-  // 🚀 [빌드 영역] Scaffold는 없애고 Stack으로 감싸서 리턴합니다!
   @override
   Widget build(BuildContext context) {
     return Stack(
