@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import '../models/gathering_model.dart';
+import '../services/chat_service.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -19,20 +20,20 @@ class MapScreenState extends State<MapScreen> {
   GoogleMapController? mapController;
   Marker? _tempMarker;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  
+
   bool _isSheetOpen = false;
   LatLng? _currentP;
   double _currentHeading = 0.0;
   StreamSubscription<Position>? _positionStream;
 
-  BitmapDescriptor? _boltIcon; 
+  BitmapDescriptor? _boltIcon;
 
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _noteController = TextEditingController();
   String _selectedCategory = '기타';
   TimeOfDay? _selectedTime;
-  
-  int _maxParticipants = 4; 
+
+  int _maxParticipants = 4;
   final List<String> _categories = ['운동', '식사', '공부', '게임', '산책', '기타'];
 
   void openCreationSheet() {
@@ -43,7 +44,7 @@ class MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-    _loadBoltIcon(); 
+    _loadBoltIcon();
     _determinePosition();
   }
 
@@ -57,22 +58,32 @@ class MapScreenState extends State<MapScreen> {
 
   Future<void> _loadBoltIcon() async {
     try {
-      final Uint8List markerIcon = await getBytesFromAsset('assets/lightning_icon.png', 50);
+      final Uint8List markerIcon = await getBytesFromAsset(
+        'assets/lightning_icon.png',
+        50,
+      );
       setState(() {
         _boltIcon = BitmapDescriptor.fromBytes(markerIcon);
       });
     } catch (e) {
       setState(() {
-        _boltIcon = BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow);
+        _boltIcon = BitmapDescriptor.defaultMarkerWithHue(
+          BitmapDescriptor.hueYellow,
+        );
       });
     }
   }
 
   Future<Uint8List> getBytesFromAsset(String path, int width) async {
     ByteData data = await rootBundle.load(path);
-    ui.Codec codec = await ui.instantiateImageCodec(data.buffer.asUint8List(), targetWidth: width);
+    ui.Codec codec = await ui.instantiateImageCodec(
+      data.buffer.asUint8List(),
+      targetWidth: width,
+    );
     ui.FrameInfo fi = await codec.getNextFrame();
-    return (await fi.image.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
+    return (await fi.image.toByteData(
+      format: ui.ImageByteFormat.png,
+    ))!.buffer.asUint8List();
   }
 
   Future<void> _determinePosition() async {
@@ -80,16 +91,20 @@ class MapScreenState extends State<MapScreen> {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5),
-    ).listen((Position position) {
-      if (mounted) {
-        setState(() {
-          _currentP = LatLng(position.latitude, position.longitude);
-          _currentHeading = position.heading;
+    _positionStream =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 5,
+          ),
+        ).listen((Position position) {
+          if (mounted) {
+            setState(() {
+              _currentP = LatLng(position.latitude, position.longitude);
+              _currentHeading = position.heading;
+            });
+          }
         });
-      }
-    });
   }
 
   // 🚀 [참여하기 창] 상용 앱 감성 디자인 적용 완료본
@@ -103,9 +118,15 @@ class MapScreenState extends State<MapScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+      ),
       builder: (context) => Container(
-        padding: const EdgeInsets.only(top: 12, left: 24, right: 24, bottom: 24),
+        padding: const EdgeInsets.only(
+          top: 12,
+          left: 24,
+          right: 24,
+          bottom: 24,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -132,18 +153,36 @@ class MapScreenState extends State<MapScreen> {
               ),
               child: Text(
                 data['category'] ?? '기타',
-                style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12),
+                style: const TextStyle(
+                  color: Colors.green,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
               ),
             ),
             const SizedBox(height: 10),
 
             // 제목과 설명
-            Text(data['title'] ?? '', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
+            Text(
+              data['title'] ?? '',
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
             const SizedBox(height: 10),
-            Text(data['description'] ?? '상세 설명이 없습니다.', style: const TextStyle(fontSize: 16, color: Colors.black54, height: 1.4)),
-            
+            Text(
+              data['description'] ?? '상세 설명이 없습니다.',
+              style: const TextStyle(
+                fontSize: 16,
+                color: Colors.black54,
+                height: 1.4,
+              ),
+            ),
+
             const Divider(height: 40, thickness: 1),
-            
+
             // 인원 현황 영역
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -152,18 +191,27 @@ class MapScreenState extends State<MapScreen> {
                   children: [
                     Icon(Icons.people_outline, color: Colors.grey, size: 20),
                     SizedBox(width: 6),
-                    Text("참여 인원", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(
+                      "참여 인원",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
                   ],
                 ),
-                Text("$current / $max 명", style: TextStyle(
-                  color: current >= max ? Colors.red : Colors.green,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                )),
+                Text(
+                  "$current / $max 명",
+                  style: TextStyle(
+                    color: current >= max ? Colors.red : Colors.green,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
-            
+
             // 게이지 바
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
@@ -171,46 +219,78 @@ class MapScreenState extends State<MapScreen> {
                 value: current / max,
                 backgroundColor: Colors.grey[100],
                 color: current >= max ? Colors.redAccent : Colors.green,
-                minHeight: 12, 
+                minHeight: 12,
               ),
             ),
             const SizedBox(height: 25),
-            
+
             // 마감 시간 안내
             Row(
               children: [
                 const Icon(Icons.access_time, color: Colors.orange, size: 18),
                 const SizedBox(width: 6),
-                Text("⏰ 오늘 ${data['time']} 까지 모여요!", style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
+                Text(
+                  "⏰ 오늘 ${data['time']} 까지 모여요!",
+                  style: const TextStyle(
+                    color: Colors.orange,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 25),
-            
+
             // 참여하기 버튼
             SizedBox(
-              width: double.infinity, 
+              width: double.infinity,
               height: 55,
               child: ElevatedButton(
-                onPressed: current < max ? () async {
-                  final user = FirebaseAuth.instance.currentUser;
-                  if (user != null) {
-                    await _firestore.collection('meetings').doc(docId).update({
-                      'currentParticipants': FieldValue.increment(1),
-                      // 💡 배열에 내 UID 추가 (내가 참여한 모임 탭에 뜨게 됨!)
-                      'participants': FieldValue.arrayUnion([user.uid]) 
-                    });
-                    if (mounted) Navigator.pop(context);
-                  }
-                } : null,
+                onPressed: current < max
+                    ? () async {
+                        final user = FirebaseAuth.instance.currentUser;
+                        if (user != null) {
+                          await _firestore
+                              .collection('meetings')
+                              .doc(docId)
+                              .update({
+                                'currentParticipants': FieldValue.increment(1),
+                                'participants': FieldValue.arrayUnion([
+                                  user.uid,
+                                ]),
+                              });
+
+                          final latestDoc = await _firestore
+                              .collection('meetings')
+                              .doc(docId)
+                              .get();
+
+                          final latestData = latestDoc.data() ?? data;
+
+                          await ChatService().joinRoom(
+                            meetingId: docId,
+                            meetingData: latestData,
+                          );
+
+                          if (mounted) Navigator.pop(context);
+                        }
+                      }
+                    : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: current < max ? Colors.amber[400] : Colors.grey[300],
+                  backgroundColor: current < max
+                      ? Colors.amber[400]
+                      : Colors.grey[300],
                   foregroundColor: Colors.black87,
                   elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
                 ),
                 child: Text(
-                  current < max ? "⚡ 이 번개 참여하기" : "아쉽지만 인원이 꽉 찼어요", 
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  current < max ? "⚡ 이 번개 참여하기" : "아쉽지만 인원이 꽉 찼어요",
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
@@ -224,24 +304,43 @@ class MapScreenState extends State<MapScreen> {
   void _showInputSheet(LatLng pos) async {
     if (_isSheetOpen) return;
     setState(() => _isSheetOpen = true);
-    
+
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheetState) => Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, top: 24, left: 24, right: 24),
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+            top: 24,
+            left: 24,
+            right: 24,
+          ),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start, // 왼쪽 정렬
               children: [
-                const Center(child: Text('⚡ 새로운 번개 만들기', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+                const Center(
+                  child: Text(
+                    '⚡ 새로운 번개 만들기',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ),
                 const SizedBox(height: 20),
-                
+
                 // 💡 [복구 완료] 카테고리 선택 UI
-                const Text('어떤 모임인가요?', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.grey)),
+                const Text(
+                  '어떤 모임인가요?',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Colors.grey,
+                  ),
+                ),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8.0,
@@ -262,23 +361,45 @@ class MapScreenState extends State<MapScreen> {
                 ),
                 const SizedBox(height: 15),
 
-                TextField(controller: _titleController, decoration: const InputDecoration(labelText: '제목')),
-                TextField(controller: _noteController, decoration: const InputDecoration(labelText: '설명')),
+                TextField(
+                  controller: _titleController,
+                  decoration: const InputDecoration(labelText: '제목'),
+                ),
+                TextField(
+                  controller: _noteController,
+                  decoration: const InputDecoration(labelText: '설명'),
+                ),
                 const SizedBox(height: 20),
-                
+
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text("모집 정원: $_maxParticipants 명", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    Text(
+                      "모집 정원: $_maxParticipants 명",
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                     Row(
                       children: [
                         IconButton(
-                          onPressed: () => setSheetState(() { if (_maxParticipants > 2) _maxParticipants--; }),
-                          icon: const Icon(Icons.remove_circle_outline, color: Colors.red),
+                          onPressed: () => setSheetState(() {
+                            if (_maxParticipants > 2) _maxParticipants--;
+                          }),
+                          icon: const Icon(
+                            Icons.remove_circle_outline,
+                            color: Colors.red,
+                          ),
                         ),
                         IconButton(
-                          onPressed: () => setSheetState(() { if (_maxParticipants < 20) _maxParticipants++; }),
-                          icon: const Icon(Icons.add_circle_outline, color: Colors.green),
+                          onPressed: () => setSheetState(() {
+                            if (_maxParticipants < 20) _maxParticipants++;
+                          }),
+                          icon: const Icon(
+                            Icons.add_circle_outline,
+                            color: Colors.green,
+                          ),
                         ),
                       ],
                     ),
@@ -286,40 +407,65 @@ class MapScreenState extends State<MapScreen> {
                 ),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: Text(_selectedTime == null ? "마감 시간 선택" : "마감: ${_selectedTime!.format(context)}"),
-                  trailing: const Icon(Icons.access_time, color: Colors.green), 
+                  title: Text(
+                    _selectedTime == null
+                        ? "마감 시간 선택"
+                        : "마감: ${_selectedTime!.format(context)}",
+                  ),
+                  trailing: const Icon(Icons.access_time, color: Colors.green),
                   onTap: () async {
-                    final picked = await showTimePicker(context: context, initialTime: TimeOfDay.now());
-                    if (picked != null) setSheetState(() => _selectedTime = picked);
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay.now(),
+                    );
+                    if (picked != null)
+                      setSheetState(() => _selectedTime = picked);
                   },
                 ),
                 const SizedBox(height: 20),
-                
+
                 SizedBox(
                   width: double.infinity,
                   height: 50,
                   child: ElevatedButton(
                     onPressed: () async {
-                      if (_titleController.text.isNotEmpty && _selectedTime != null) {
+                      if (_titleController.text.isNotEmpty &&
+                          _selectedTime != null) {
                         final now = DateTime.now();
-                        final d = DateTime(now.year, now.month, now.day, _selectedTime!.hour, _selectedTime!.minute);
-                        final user = FirebaseAuth.instance.currentUser; // 현재 유저 가져오기
+                        final d = DateTime(
+                          now.year,
+                          now.month,
+                          now.day,
+                          _selectedTime!.hour,
+                          _selectedTime!.minute,
+                        );
+                        final user =
+                            FirebaseAuth.instance.currentUser; // 현재 유저 가져오기
 
-                        await _firestore.collection('meetings').add({
+                        final meetingData = {
                           'title': _titleController.text,
-                          'category': _selectedCategory, // 💡 선택된 카테고리 정상 저장
+                          'category': _selectedCategory,
                           'description': _noteController.text,
                           'time': _selectedTime!.format(context),
                           'lat': pos.latitude,
                           'lng': pos.longitude,
-                          'currentParticipants': 1, 
-                          'maxParticipants': _maxParticipants, 
+                          'currentParticipants': 1,
+                          'maxParticipants': _maxParticipants,
                           'deadline': Timestamp.fromDate(d),
-                          'creatorId': user?.uid ?? '', // 💡 이 모임 만든 사람 ID 저장 (내가 만든 모임 탭 연결!)
-                          'participants': user?.uid != null ? [user!.uid] : [], // 💡 방장 자동 참여
-                        });
-                        
-                        _titleController.clear(); 
+                          'creatorId': user?.uid ?? '',
+                          'participants': user != null ? [user.uid] : [],
+                        };
+
+                        final meetingRef = await _firestore
+                            .collection('meetings')
+                            .add(meetingData);
+
+                        await ChatService().createRoomForMeeting(
+                          meetingId: meetingRef.id,
+                          meetingData: meetingData,
+                        );
+
+                        _titleController.clear();
                         _noteController.clear();
                         if (mounted) Navigator.pop(context);
                       }
@@ -327,9 +473,17 @@ class MapScreenState extends State<MapScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
-                    child: const Text("번개 생성", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    child: const Text(
+                      "번개 생성",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 30),
@@ -353,20 +507,25 @@ class MapScreenState extends State<MapScreen> {
         StreamBuilder<QuerySnapshot>(
           stream: _firestore.collection('meetings').snapshots(),
           builder: (context, snapshot) {
-            if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+            if (!snapshot.hasData)
+              return const Center(child: CircularProgressIndicator());
 
             final now = DateTime.now();
             final markers = <Marker>{};
 
             if (_currentP != null) {
-              markers.add(Marker(
-                markerId: const MarkerId("me"),
-                position: _currentP!,
-                icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-                rotation: _currentHeading,
-                anchor: const Offset(0.5, 0.5),
-                zIndex: 5,
-              ));
+              markers.add(
+                Marker(
+                  markerId: const MarkerId("me"),
+                  position: _currentP!,
+                  icon: BitmapDescriptor.defaultMarkerWithHue(
+                    BitmapDescriptor.hueAzure,
+                  ),
+                  rotation: _currentHeading,
+                  anchor: const Offset(0.5, 0.5),
+                  zIndex: 5,
+                ),
+              );
             }
 
             for (var doc in snapshot.data!.docs) {
@@ -376,27 +535,31 @@ class MapScreenState extends State<MapScreen> {
                 if (now.isAfter(deadline)) continue;
               }
 
-              markers.add(Marker(
-                markerId: MarkerId(doc.id),
-                position: LatLng(data['lat'], data['lng']),
-                icon: _boltIcon ?? BitmapDescriptor.defaultMarker, 
-                onTap: () => _onMarkerTapped(doc.id, data),
-              ));
+              markers.add(
+                Marker(
+                  markerId: MarkerId(doc.id),
+                  position: LatLng(data['lat'], data['lng']),
+                  icon: _boltIcon ?? BitmapDescriptor.defaultMarker,
+                  onTap: () => _onMarkerTapped(doc.id, data),
+                ),
+              );
             }
 
             return GoogleMap(
-              initialCameraPosition: const CameraPosition(target: LatLng(37.9142, 127.1578), zoom: 14),
+              initialCameraPosition: const CameraPosition(
+                target: LatLng(37.9142, 127.1578),
+                zoom: 14,
+              ),
               onMapCreated: (controller) => mapController = controller,
-              markers: {
-                ...markers,
-                if (_tempMarker != null) _tempMarker!,
-              },
+              markers: {...markers, if (_tempMarker != null) _tempMarker!},
               onLongPress: (LatLng tappedPoint) {
                 setState(() {
                   _tempMarker = Marker(
                     markerId: const MarkerId("temp_marker"),
                     position: tappedPoint,
-                    icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                      BitmapDescriptor.hueRed,
+                    ),
                   );
                 });
                 _showInputSheet(tappedPoint);
@@ -404,33 +567,44 @@ class MapScreenState extends State<MapScreen> {
               scrollGesturesEnabled: !_isSheetOpen,
               myLocationEnabled: true,
               myLocationButtonEnabled: true,
-              zoomControlsEnabled: true, 
+              zoomControlsEnabled: true,
               mapToolbarEnabled: false,
               compassEnabled: true,
             );
           },
         ),
-        
+
         // 2. 상단 검색바 느낌의 UI 레이어 (상용 앱 감성 한 스푼 추가)
         Positioned(
-          top: 50, left: 20, right: 20,
+          top: 50,
+          left: 20,
+          right: 20,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(30),
-              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black12,
+                  blurRadius: 10,
+                  offset: Offset(0, 5),
+                ),
+              ],
             ),
             child: const Row(
               children: [
                 Icon(Icons.search, color: Colors.green),
                 SizedBox(width: 10),
-                Text("동네 주변 번개 모임 찾기", style: TextStyle(color: Colors.grey, fontSize: 16)),
+                Text(
+                  "동네 주변 번개 모임 찾기",
+                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                ),
               ],
             ),
           ),
         ),
-        
+
         // 3. 내 위치로 이동 버튼
         Positioned(
           bottom: 120,
@@ -440,7 +614,7 @@ class MapScreenState extends State<MapScreen> {
             mini: true,
             backgroundColor: Colors.white,
             onPressed: () {
-              if(mapController != null && _currentP != null) {
+              if (mapController != null && _currentP != null) {
                 mapController!.animateCamera(
                   CameraUpdate.newLatLngZoom(_currentP!, 16),
                 );
