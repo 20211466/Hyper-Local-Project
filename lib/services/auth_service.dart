@@ -1,8 +1,13 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+// 💡 [추가] 파이어베이스 데이터베이스(Firestore)를 사용하기 위해 임포트 추가
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  // 💡 데이터베이스 인스턴스 추가
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     clientId: '154101026042-44deanqlktbm63g78ijqjm6cf7221q95.apps.googleusercontent.com'
   );
@@ -23,12 +28,25 @@ class AuthService {
     required String password,
     required String nickname,
   }) async {
+    // 1. Firebase Auth로 이메일 계정 생성
     final credential = await _auth.createUserWithEmailAndPassword(
       email: email,
       password: password,
     );
     await credential.user?.updateDisplayName(nickname);
     await credential.user?.reload();
+
+    // 💡 [추가] 2. 회원가입 완료 후 Firestore 'users' 컬렉션에 내 정보와 매너 볼트 0점 기록!
+    if (credential.user != null) {
+      await _firestore.collection('users').doc(credential.user!.uid).set({
+        'uid': credential.user!.uid,
+        'email': email,
+        'displayName': nickname,
+        'mannerVolt': 0, // 매너 볼트 기본값 설정!
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+
     return credential;
   }
 
@@ -41,7 +59,28 @@ class AuthService {
       accessToken: googleAuth.accessToken,
       idToken: googleAuth.idToken,
     );
-    return _auth.signInWithCredential(credential);
+    
+    // 1. 구글 자격증명으로 Firebase Auth 로그인
+    final userCredential = await _auth.signInWithCredential(credential);
+    
+    // 💡 [추가] 2. 구글 로그인 시 처음 온 유저라면 Firestore에 매너 볼트 0점 방 만들어주기
+    if (userCredential.user != null) {
+      final userRef = _firestore.collection('users').doc(userCredential.user!.uid);
+      final docSnapshot = await userRef.get();
+      
+      // DB에 문서가 없다면 (처음 구글 로그인하는 회원이라면)
+      if (!docSnapshot.exists) {
+        await userRef.set({
+          'uid': userCredential.user!.uid,
+          'email': userCredential.user!.email,
+          'displayName': userCredential.user!.displayName ?? '구글 유저',
+          'mannerVolt': 0, // 매너 볼트 기본값 설정!
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    return userCredential;
   }
 
   Future<void> signOut() async {

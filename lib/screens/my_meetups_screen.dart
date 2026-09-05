@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../services/chat_service.dart';
 import '../widgets/meetup_card.dart';
+// 💡 [추가] 매너 볼트 팝업창 다이얼로그 임포트
+import '../widgets/manner_volt_dialog.dart'; 
 
 class MyMeetupsScreen extends StatelessWidget {
   const MyMeetupsScreen({super.key});
@@ -110,6 +112,20 @@ class _MeetupStreamList extends StatelessWidget {
   Future<void> _handleDeleteOrLeave(BuildContext context, String docId, Map<String, dynamic> data) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
+
+    // 💡 [핵심 추가] 모임 데이터를 삭제/나가기 전에 매너 볼트 팝업을 먼저 띄웁니다.
+    List<dynamic> participants = data['participants'] ?? [];
+    await showDialog(
+      context: context,
+      barrierDismissible: false, // 팝업 밖을 눌러서 닫는 것 방지
+      builder: (context) => MannerVoltDialog(
+        participantIds: participants,
+        meetingId: docId,
+      ),
+    );
+
+    // 비동기 작업(팝업 대기) 이후 위젯이 아직 화면에 있는지 확인
+    if (!context.mounted) return;
 
     try {
       if (isCreatorMode) {

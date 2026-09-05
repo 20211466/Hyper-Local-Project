@@ -3,14 +3,14 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
-import 'dart:async';
+import 'dart:async'; // 💡 디바운싱 및 타임아웃 처리를 위한 임포트
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'dart:convert'; // 💡 [추가됨] 안전한 JSON 파싱을 위한 임포트
+
 import '../models/gathering_model.dart';
 import '../services/chat_service.dart';
-
-// 💡 리스트 형태 UI를 위해 기존에 만든 위젯과 화면을 불러옵니다.
 import '../widgets/meetup_card.dart';
 import 'gathering_detail_screen.dart';
 
@@ -30,6 +30,9 @@ class MapScreenState extends State<MapScreen> {
   LatLng? _currentP;
   double _currentHeading = 0.0;
   StreamSubscription<Position>? _positionStream;
+  
+  // 💡 [디바운싱] 지도가 멈추고 0.5초를 세기 위한 타이머 변수
+  Timer? _debounce;
 
   BitmapDescriptor? _boltIcon;
 
@@ -67,6 +70,7 @@ class MapScreenState extends State<MapScreen> {
     _titleController.dispose();
     _noteController.dispose();
     _searchController.dispose();
+    _debounce?.cancel(); // 💡 [디바운싱] 화면이 꺼질 때 타이머 안전 종료
     super.dispose();
   }
 
@@ -108,41 +112,80 @@ class MapScreenState extends State<MapScreen> {
     });
   }
 
+  // 💡 [핵심 추가] AI 프롬프트 철벽 방어 로직 (JSON 강제, 타임아웃, 예외처리 완벽 적용)
   Future<void> _polishTextWithAI(Function setSheetState) async {
     if (_titleController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('AI 가이드: 먼저 제목이나 키워드를 간략히 적어주세요!')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('💡 AI 가이드: 먼저 제목이나 키워드를 간략히 적어주세요!'))
+      );
       return;
     }
+    
     setSheetState(() => _isAiLoading = true);
+    
     try {
       final model = GenerativeModel(
-        model: 'gemini-3-flash-preview',
-        apiKey: 'YOUR_GEMINI_API_KEY_HERE', 
+        model: 'gemini-1.5-flash', 
+        apiKey: 'YOUR_GEMINI_API_KEY_HERE', // 팀장님의 API 키를 넣어주세요.
       );
+      
       final prompt = """
       너는 동네 기반 번개 모임 앱의 친절한 AI 매니저야.
       [카테고리] : $_selectedCategory
-      [사용자 입력] : ${_titleController.text} ${_noteController.text}
-      반드시 아래 JSON 형식으로만 응답해줘. 군더더기 말은 하지마.
-      {"title": "이모지 포함 제목", "description": "친절한 설명"}
+      [사용자 입력] : ${_titleController.text}${_noteController.text}
+      
+      규칙:
+      1. 모임 성격에 맞게 이모지를 적절히 사용하여 매력적인 제목과 상세 설명을 작성해.
+      2. 마크다운(` ```json ` 등)이나 부가 설명, 인삿말은 절대 금지. 오직 순수한 JSON 객체 하나만 반환해.
+      3. 반드시 아래의 JSON Key 포맷을 정확히 지켜.
+      {"title": "여기에 제목", "description": "여기에 설명"}
       """;
-      final response = await model.generateContent([Content.text(prompt)]);
+
+      // 네트워크 지연 방지 (10초 타임아웃)
+      final response = await model.generateContent([Content.text(prompt)]).timeout(
+        const Duration(seconds: 10),
+      );
+
       final responseText = response.text;
       if (responseText != null) {
-        String cleanJson = responseText.replaceAll('```json', '').replaceAll('```', '').trim();
-        int titleStart = cleanJson.indexOf('"title": "') + 10;
-        int titleEnd = cleanJson.indexOf('",', titleStart);
-        int descStart = cleanJson.indexOf('"description": "') + 16;
-        int descEnd = cleanJson.lastIndexOf('"');
-        if (titleStart > 9 && titleEnd > 0 && descStart > 15 && descEnd > 0) {
-          _titleController.text = cleanJson.substring(titleStart, titleEnd);
-          _noteController.text = cleanJson.substring(descStart, descEnd).replaceAll('\\n', '\n');
+        // AI가 마크다운을 씌웠을 경우를 대비한 찌꺼기 제거 전처리
+        String cleanJson = responseText.trim();
+        if (cleanJson.startsWith('```json')) cleanJson = cleanJson.replaceFirst('```json', '');
+        if (cleanJson.startsWith('```')) cleanJson = cleanJson.replaceFirst('```', '');
+        if (cleanJson.endsWith('```')) cleanJson = cleanJson.substring(0, cleanJson.length - 3);
+        cleanJson = cleanJson.trim();
+
+        // indexOf가 아닌 안전한 JSON 디코더 사용
+        final Map<String, dynamic> parsedData = jsonDecode(cleanJson);
+        
+        if (parsedData.containsKey('title') && parsedData.containsKey('description')) {
+          _titleController.text = parsedData['title'];
+          _noteController.text = parsedData['description'];
+        } else {
+           throw const FormatException('JSON Key 불일치');
         }
       }
+    } on TimeoutException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⏳ AI 서버가 혼잡하여 시간이 초과되었습니다. 직접 작성해주세요!'), 
+          backgroundColor: Colors.orange
+        ),
+      );
     } catch (e) {
       print("AI 에러: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ AI 텍스트 생성에 실패했습니다. 올바른 키워드를 입력해주세요.'), 
+          backgroundColor: Colors.red
+        ),
+      );
     } finally {
-      setSheetState(() => _isAiLoading = false);
+      if (mounted) {
+        setSheetState(() => _isAiLoading = false);
+      }
     }
   }
 
@@ -204,7 +247,6 @@ class MapScreenState extends State<MapScreen> {
     );
   }
 
-  // 💡 [새로운 핵심 기능] 현재 필터링된 모임들을 리스트업 해주는 팝업창!
   void _showListBottomSheet(List<QueryDocumentSnapshot> filteredDocs) {
     showModalBottomSheet(
       context: context,
@@ -212,9 +254,9 @@ class MapScreenState extends State<MapScreen> {
       backgroundColor: Colors.transparent,
       builder: (context) {
         return DraggableScrollableSheet(
-          initialChildSize: 0.6, // 처음 올라오는 높이 (60%)
+          initialChildSize: 0.6,
           minChildSize: 0.4,
-          maxChildSize: 0.9, // 위로 끝까지 올리면 90%까지 확장
+          maxChildSize: 0.9,
           builder: (_, controller) {
             return Container(
               decoration: const BoxDecoration(
@@ -224,7 +266,6 @@ class MapScreenState extends State<MapScreen> {
               child: Column(
                 children: [
                   const SizedBox(height: 12),
-                  // 손잡이 아이콘
                   Container(
                     width: 40, height: 5,
                     decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10)),
@@ -246,7 +287,6 @@ class MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const Divider(height: 1),
-                  // 리스트뷰 영역
                   Expanded(
                     child: filteredDocs.isEmpty
                         ? const Center(child: Text("조건에 맞는 번개가 없어요 🥲", style: TextStyle(color: Colors.grey)))
@@ -256,9 +296,7 @@ class MapScreenState extends State<MapScreen> {
                             itemCount: filteredDocs.length,
                             itemBuilder: (context, index) {
                               final data = filteredDocs[index].data() as Map<String, dynamic>;
-                              final docId = filteredDocs[index].id;
                               
-                              // GatheringDetailScreen으로 넘기기 위해 데이터 변환
                               final gathering = Gathering(
                                 title: data['title'] ?? '제목 없음',
                                 location: data['location'] ?? "지도 표시 지점",
@@ -273,7 +311,6 @@ class MapScreenState extends State<MapScreen> {
                                     MaterialPageRoute(builder: (context) => GatheringDetailScreen(gathering: gathering)),
                                   );
                                 },
-                                // 기존에 만들어둔 MeetupCard 컴포넌트를 그대로 재활용!
                                 child: MeetupCard(meetupData: data),
                               );
                             },
@@ -484,8 +521,6 @@ class MapScreenState extends State<MapScreen> {
 
         final now = DateTime.now();
         final markers = <Marker>{};
-        
-        // 💡 화면 안의 필터링된 모임 문서들을 저장할 리스트
         final List<QueryDocumentSnapshot> filteredDocs = []; 
 
         if (_currentP != null) {
@@ -522,7 +557,6 @@ class MapScreenState extends State<MapScreen> {
             continue; 
           }
 
-          // 모든 필터를 통과한 모임만 마커로 찍고, 리스트에도 추가!
           markers.add(
             Marker(
               markerId: MarkerId(doc.id), position: LatLng(data['lat'], data['lng']),
@@ -533,18 +567,28 @@ class MapScreenState extends State<MapScreen> {
           filteredDocs.add(doc); 
         }
 
-        // 전체 화면 레이아웃 반환 (GoogleMap + UI 요소들)
         return Stack(
           children: [
             GoogleMap(
               initialCameraPosition: CameraPosition(target: _cameraCenter, zoom: 14),
               onMapCreated: (controller) => mapController = controller,
+              
+              // 💡 [디바운싱] 지도를 움직일 때는 타이머를 계속 취소시킵니다.
               onCameraMove: (CameraPosition position) {
                 _cameraCenter = position.target;
+                if (_debounce?.isActive ?? false) _debounce!.cancel();
               },
+              
+              // 💡 [디바운싱] 손가락을 떼고 화면이 멈춘 후 딱 0.5초(500ms) 뒤에만 검색을 실행합니다.
               onCameraIdle: () {
-                setState(() {}); 
+                if (_debounce?.isActive ?? false) _debounce!.cancel();
+                _debounce = Timer(const Duration(milliseconds: 500), () {
+                  if (mounted) {
+                    setState(() {}); 
+                  }
+                });
               },
+              
               markers: {...markers, if (_tempMarker != null) _tempMarker!},
               onLongPress: (LatLng tappedPoint) {
                 setState(() => _tempMarker = Marker(markerId: const MarkerId("temp"), position: tappedPoint, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed)));
@@ -590,7 +634,6 @@ class MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
@@ -621,7 +664,6 @@ class MapScreenState extends State<MapScreen> {
               ),
             ),
 
-            // 💡 [새로 추가된 하단 중앙 '목록 보기' 버튼]
             Positioned(
               bottom: 40,
               left: 0,
