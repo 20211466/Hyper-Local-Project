@@ -5,6 +5,7 @@ import 'firebase_options.dart';
 
 import 'views/main_shell.dart';
 import 'screens/login_screen.dart'; // 💡 추가: 팀원이 만든 로그인 화면을 가져옵니다.
+import 'screens/verify_identity_screen.dart'; // 💡 추가: 이메일/휴대폰 본인인증 화면
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,13 +29,35 @@ class AuthGate extends StatelessWidget {
       // FirebaseAuth가 로그인/로그아웃 상태가 바뀔 때마다 알려줍니다.
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
-        // 1. 로그인 데이터가 있으면 (로그인 성공 상태) -> 원래 보려던 MainShell(지도 등) 화면으로 이동!
-        if (snapshot.hasData) {
-          return const MainShell(); 
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-        
-        // 2. 로그인 데이터가 없으면 (로그아웃 상태) -> 팀원이 만든 로그인 화면으로 이동!
-        return const LoginScreen(); 
+
+        // 1. 로그인 데이터가 없으면 (로그아웃 상태) -> 팀원이 만든 로그인 화면으로 이동!
+        if (!snapshot.hasData) {
+          return const LoginScreen();
+        }
+
+        // 2. 로그인은 했지만 본인인증(이메일 인증 또는 휴대폰 인증)이 안 됐다면
+        //    -> 본인인증 화면으로 이동! (Google 로그인 유저는 이메일이 이미 인증된 상태로 취급됩니다)
+        return FutureBuilder<void>(
+          future: FirebaseAuth.instance.currentUser?.reload(),
+          builder: (context, reloadSnapshot) {
+            if (reloadSnapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+
+            final user = FirebaseAuth.instance.currentUser;
+            final isVerified = (user?.emailVerified ?? false) || (user?.phoneNumber != null);
+
+            if (!isVerified) {
+              return const VerifyIdentityScreen();
+            }
+
+            // 3. 로그인 + 본인인증까지 완료 -> 원래 보려던 MainShell(지도 등) 화면으로 이동!
+            return const MainShell();
+          },
+        );
       },
     );
   }

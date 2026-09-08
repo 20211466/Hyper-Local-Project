@@ -47,7 +47,94 @@ class AuthService {
       });
     }
 
+    // 💡 [본인인증] 이메일/비밀번호 가입 직후 인증 메일을 바로 발송합니다.
+    await credential.user?.sendEmailVerification();
+
     return credential;
+  }
+
+  // ===================== 본인인증 (이메일) =====================
+
+  /// 현재 로그인된 유저가 이메일 인증(또는 휴대폰 인증)을 마쳤는지 여부.
+  /// Google 로그인 유저는 Firebase가 자동으로 emailVerified = true 로 표시해줍니다.
+  bool get isIdentityVerified {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+    return user.emailVerified || user.phoneNumber != null;
+  }
+
+  /// 서버에 저장된 최신 인증 상태를 다시 받아옵니다. (인증 메일 클릭 직후 등 확인용)
+  Future<void> reloadCurrentUser() async {
+    await _auth.currentUser?.reload();
+  }
+
+  /// 인증 메일을 재전송합니다. 너무 자주 요청하면 FirebaseAuthException('too-many-requests')이 발생합니다.
+  Future<void> sendEmailVerification() async {
+    await _auth.currentUser?.sendEmailVerification();
+  }
+
+  // ===================== 본인인증 (휴대폰) =====================
+
+  /// 한국 휴대폰 번호("010-1234-5678", "01012345678")를 국제 표준 형식("+8210...")으로 변환합니다.
+  String toE164PhoneNumber(String raw) {
+    final digitsOnly = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digitsOnly.startsWith('0')) {
+      return '+82${digitsOnly.substring(1)}';
+    }
+    if (raw.trim().startsWith('+')) return raw.trim();
+    return '+82$digitsOnly';
+  }
+
+  /// 입력한 휴대폰 번호로 인증번호(SMS)를 발송합니다.
+  /// 안드로이드에서는 기기가 SMS를 자동으로 인식하면 [onAutoVerified]가 바로 호출될 수 있습니다.
+  Future<void> startPhoneVerification({
+    required String phoneNumber,
+    required void Function(String verificationId) onCodeSent,
+    required void Function(FirebaseAuthException e) onFailed,
+    required void Function() onAutoVerified,
+  }) async {
+    await _auth.verifyPhoneNumber(
+      phoneNumber: toE164PhoneNumber(phoneNumber),
+      timeout: const Duration(seconds: 60),
+      verificationCompleted: (PhoneAuthCredential credential) async {
+        await _linkPhoneCredential(credential);
+        onAutoVerified();
+      },
+      verificationFailed: onFailed,
+      codeSent: (String verificationId, int? resendToken) {
+        onCodeSent(verificationId);
+      },
+      codeAutoRetrievalTimeout: (String verificationId) {},
+    );
+  }
+
+  /// 사용자가 입력한 인증번호(SMS 코드)로 휴대폰 인증을 완료합니다.
+  Future<void> confirmPhoneCode({
+    required String verificationId,
+    required String smsCode,
+  }) async {
+    final credential = PhoneAuthProvider.credential(
+      verificationId: verificationId,
+      smsCode: smsCode,
+    );
+    await _linkPhoneCredential(credential);
+  }
+
+  Future<void> _linkPhoneCredential(PhoneAuthCredential credential) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    // 이미 이 계정에 휴대폰 인증이 되어 있다면 다시 연결할 필요 없음
+    if (user.phoneNumber != null) return;
+
+    await user.linkWithCredential(credential);
+    await user.reload();
+
+    // 💡 Firestore에도 인증된 휴대폰 번호를 기록해 둡니다.
+    await _firestore.collection('users').doc(user.uid).set({
+      'phoneNumber': _auth.currentUser?.phoneNumber,
+      'phoneVerifiedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<UserCredential?> signInWithGoogle() async {
@@ -101,6 +188,15 @@ class AuthService {
         return '비밀번호는 6자 이상이어야 합니다.';
       case 'invalid-email':
         return '올바르지 않은 이메일 형식입니다.';
+      case 'too-many-requests':
+        return '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.';
+      case 'invalid-phone-number':
+        return '올바르지 않은 휴대폰 번호 형식입니다.';
+      case 'invalid-verification-code':
+        return '인증번호가 올바르지 않습니다.';
+      case 'credential-already-in-use':
+      case 'provider-already-linked':
+        return '이미 다른 계정에 연결된 휴대폰 번호입니다.';
       default:
         return '오류가 발생했습니다: ${e.message}';
     }
