@@ -12,6 +12,7 @@ import 'dart:convert';
 
 import '../models/gathering_model.dart';
 import '../services/chat_service.dart';
+import '../services/geocoding_service.dart';
 import '../widgets/meetup_card.dart';
 import 'gathering_detail_screen.dart';
 
@@ -265,6 +266,28 @@ class MapScreenState extends State<MapScreen> {
             child: const Text('검색'),
           ),
         ],
+      ),
+    );
+  }
+
+  // 💡 [다른 동네 검색] 동/읍/면 이름을 입력하면 그 위치로 지도 카메라를 이동시킵니다.
+  Future<void> _openLocationSearch() async {
+    final result = await showDialog<LatLng>(
+      context: context,
+      builder: (context) => _LocationSearchDialog(onSearch: GeocodingService.searchPlace),
+    );
+
+    if (result == null || !mounted) return;
+
+    setState(() => _cameraCenter = result);
+    mapController?.animateCamera(CameraUpdate.newLatLngZoom(result, 15));
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('📍 해당 위치로 이동했어요. 주변 번개 모임을 확인해보세요!'),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -787,43 +810,71 @@ class MapScreenState extends State<MapScreen> {
               top: 50, left: 20, right: 20,
               child: Column(
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(30),
-                    child: BackdropFilter(
-                      filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                      child: GestureDetector(
-                        onTap: _showSearchDialog,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.85),
-                            borderRadius: BorderRadius.circular(30),
-                            border: Border.all(color: Colors.white.withOpacity(0.3)),
-                            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.search, color: Colors.green),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  _searchQuery.isEmpty ? "동네 주변 번개 모임 찾기" : "검색어: '$_searchQuery'",
-                                  style: TextStyle(color: _searchQuery.isEmpty ? Colors.grey : Colors.green[800], fontWeight: _searchQuery.isEmpty ? FontWeight.normal : FontWeight.bold, fontSize: 16),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(30),
+                          child: BackdropFilter(
+                            filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                            child: GestureDetector(
+                              onTap: _showSearchDialog,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.85),
+                                  borderRadius: BorderRadius.circular(30),
+                                  border: Border.all(color: Colors.white.withOpacity(0.3)),
+                                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.search, color: Colors.green),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        _searchQuery.isEmpty ? "동네 주변 번개 모임 찾기" : "검색어: '$_searchQuery'",
+                                        style: TextStyle(color: _searchQuery.isEmpty ? Colors.grey : Colors.green[800], fontWeight: _searchQuery.isEmpty ? FontWeight.normal : FontWeight.bold, fontSize: 16),
+                                      ),
+                                    ),
+                                    if (_searchQuery.isNotEmpty)
+                                      GestureDetector(
+                                        onTap: () {
+                                          setState(() { _searchQuery = ''; _searchController.clear(); });
+                                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("검색 필터를 해제했습니다."), duration: Duration(seconds: 1)));
+                                        },
+                                        child: const Icon(Icons.cancel, color: Colors.grey, size: 20),
+                                      ),
+                                  ],
                                 ),
                               ),
-                              if (_searchQuery.isNotEmpty) 
-                                GestureDetector(
-                                  onTap: () {
-                                    setState(() { _searchQuery = ''; _searchController.clear(); });
-                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("검색 필터를 해제했습니다."), duration: Duration(seconds: 1)));
-                                  },
-                                  child: const Icon(Icons.cancel, color: Colors.grey, size: 20),
-                                ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                      const SizedBox(width: 10),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                          child: GestureDetector(
+                            onTap: _openLocationSearch,
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.85),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white.withOpacity(0.3)),
+                                boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
+                              ),
+                              child: const Icon(Icons.travel_explore, color: Colors.green),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   Container(
@@ -892,6 +943,115 @@ class MapScreenState extends State<MapScreen> {
           ],
         );
       },
+    );
+  }
+}
+
+/// 동/읍/면 이름을 입력받아 [onSearch]로 좌표를 찾고, 성공하면 그 좌표를 반환하며 닫히는 다이얼로그.
+class _LocationSearchDialog extends StatefulWidget {
+  final Future<LatLng?> Function(String query) onSearch;
+
+  const _LocationSearchDialog({required this.onSearch});
+
+  @override
+  State<_LocationSearchDialog> createState() => _LocationSearchDialogState();
+}
+
+class _LocationSearchDialogState extends State<_LocationSearchDialog> {
+  final _controller = TextEditingController();
+  bool _isSearching = false;
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final query = _controller.text.trim();
+    if (query.isEmpty) {
+      setState(() => _errorText = '동네 이름을 입력해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isSearching = true;
+      _errorText = null;
+    });
+
+    try {
+      final result = await widget.onSearch(query);
+      if (!mounted) return;
+
+      if (result == null) {
+        setState(() {
+          _isSearching = false;
+          _errorText = '해당 지역을 찾을 수 없어요. 다른 동네 이름으로 시도해보세요.';
+        });
+        return;
+      }
+
+      Navigator.of(context).pop(result);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSearching = false;
+        _errorText = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Text('🗺️ 다른 동네로 이동', style: TextStyle(fontWeight: FontWeight.bold)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '동/읍/면 이름을 입력하면 지도가 그 위치로 이동해요.',
+            style: TextStyle(color: Colors.black54, fontSize: 13),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            enabled: !_isSearching,
+            decoration: InputDecoration(
+              hintText: '예: 역삼동, 서초구 반포동',
+              filled: true,
+              fillColor: Colors.grey[100],
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              prefixIcon: const Icon(Icons.location_on_outlined, color: Colors.green),
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          if (_errorText != null) ...[
+            const SizedBox(height: 10),
+            Text(_errorText!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSearching ? null : () => Navigator.pop(context),
+          child: const Text('취소', style: TextStyle(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: _isSearching ? null : _submit,
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+          child: _isSearching
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                )
+              : const Text('이동'),
+        ),
+      ],
     );
   }
 }
