@@ -7,10 +7,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'firebase_options.dart';
 
 import 'views/main_shell.dart';
-import 'screens/login_screen.dart';
+import 'screens/login_screen.dart'; // 💡 팀원이 만든 로그인 화면
+import 'screens/verify_identity_screen.dart'; // 💡 팀원이 추가한 본인인증 화면
 
-
-// 💡 앱이 꺼져있거나 화면을 내린 상태일 때 알림을 받아주는 함수
+// 💡 앱이 꺼져있거나 화면을 내린 상태일 때 알림을 받아주는 함수 (팀장님 코드)
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -71,10 +71,37 @@ class AuthGate extends StatelessWidget {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
-        if (snapshot.hasData) {
-          return const MainShell(); 
+        
+        // 💡 팀원분이 작성한 디테일한 로그인 + 본인인증 체크 로직 (팀원 코드 수용)
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-        return const LoginScreen(); 
+
+        // 1. 로그인 데이터가 없으면 (로그아웃 상태) -> 팀원이 만든 로그인 화면으로 이동!
+        if (!snapshot.hasData) {
+          return const LoginScreen();
+        }
+
+        // 2. 로그인은 했지만 본인인증(이메일 인증 또는 휴대폰 인증)이 안 됐다면
+        //    -> 본인인증 화면으로 이동! (Google 로그인 유저는 이메일이 이미 인증된 상태로 취급됩니다)
+        return FutureBuilder<void>(
+          future: FirebaseAuth.instance.currentUser?.reload(),
+          builder: (context, reloadSnapshot) {
+            if (reloadSnapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+
+            final user = FirebaseAuth.instance.currentUser;
+            final isVerified = (user?.emailVerified ?? false) || (user?.phoneNumber != null);
+
+            if (!isVerified) {
+              return const VerifyIdentityScreen();
+            }
+
+            // 3. 로그인 + 본인인증까지 완료 -> 원래 보려던 MainShell(지도 등) 화면으로 이동!
+            return const MainShell();
+          },
+        );
       },
     );
   }
