@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
-import 'dart:async'; // 💡 디바운싱 및 타임아웃 처리를 위한 임포트
+import 'dart:async'; 
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
-import 'dart:convert'; // 💡 [추가됨] 안전한 JSON 파싱을 위한 임포트
+import 'dart:convert'; 
 
 import '../models/gathering_model.dart';
 import '../services/chat_service.dart';
@@ -22,6 +23,8 @@ class MapScreen extends StatefulWidget {
 }
 
 class MapScreenState extends State<MapScreen> {
+  bool? _hasLocationPermission;
+  
   GoogleMapController? mapController;
   Marker? _tempMarker;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -31,9 +34,8 @@ class MapScreenState extends State<MapScreen> {
   double _currentHeading = 0.0;
   StreamSubscription<Position>? _positionStream;
   
-  // 💡 [디바운싱] 지도가 멈추고 0.5초를 세기 위한 타이머 변수
+  bool _isFirstLocationFetched = false;
   Timer? _debounce;
-
   BitmapDescriptor? _boltIcon;
 
   final TextEditingController _titleController = TextEditingController();
@@ -45,7 +47,6 @@ class MapScreenState extends State<MapScreen> {
   final List<String> _categories = ['운동', '식사', '공부', '게임', '산책', '기타'];
 
   bool _isAiLoading = false;
-
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
 
@@ -61,7 +62,7 @@ class MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     _loadBoltIcon();
-    _determinePosition();
+    _checkPermissionAndFetchLocation(); 
   }
 
   @override
@@ -70,7 +71,7 @@ class MapScreenState extends State<MapScreen> {
     _titleController.dispose();
     _noteController.dispose();
     _searchController.dispose();
-    _debounce?.cancel(); // 💡 [디바운싱] 화면이 꺼질 때 타이머 안전 종료
+    _debounce?.cancel(); 
     super.dispose();
   }
 
@@ -94,11 +95,32 @@ class MapScreenState extends State<MapScreen> {
     return (await fi.image.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
   }
 
-  Future<void> _determinePosition() async {
-    LocationPermission permission = await Geolocator.checkPermission();
+  Future<void> _checkPermissionAndFetchLocation() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      setState(() => _hasLocationPermission = false);
+      return;
+    }
+
+    permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        setState(() => _hasLocationPermission = false);
+        return;
+      }
     }
+    
+    if (permission == LocationPermission.deniedForever) {
+      setState(() => _hasLocationPermission = false);
+      return;
+    }
+
+    setState(() => _hasLocationPermission = true);
+
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5),
     ).listen((Position position) {
@@ -106,13 +128,19 @@ class MapScreenState extends State<MapScreen> {
         setState(() {
           _currentP = LatLng(position.latitude, position.longitude);
           _currentHeading = position.heading;
-          if (mapController == null) _cameraCenter = _currentP!; 
+          
+          if (!_isFirstLocationFetched && mapController != null) {
+            _cameraCenter = _currentP!;
+            mapController!.animateCamera(CameraUpdate.newLatLngZoom(_currentP!, 13));
+            _isFirstLocationFetched = true;
+          } else if (mapController == null) {
+            _cameraCenter = _currentP!; 
+          }
         });
       }
     });
   }
 
-  // 💡 [핵심 추가] AI 프롬프트 철벽 방어 로직 (JSON 강제, 타임아웃, 예외처리 완벽 적용)
   Future<void> _polishTextWithAI(Function setSheetState) async {
     if (_titleController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -125,8 +153,8 @@ class MapScreenState extends State<MapScreen> {
     
     try {
       final model = GenerativeModel(
-        model: 'gemini-1.5-flash', 
-        apiKey: 'YOUR_GEMINI_API_KEY_HERE', // 팀장님의 API 키를 넣어주세요.
+        model: 'gemini-3.6-flash',
+        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
       );
       
       final prompt = """
@@ -135,27 +163,24 @@ class MapScreenState extends State<MapScreen> {
       [사용자 입력] : ${_titleController.text}${_noteController.text}
       
       규칙:
-      1. 모임 성격에 맞게 이모지를 적절히 사용하여 매력적인 제목과 상세 설명을 작성해.
+      1. [중요] 시스템 폰트 오류가 발생하므로 이모지(이모티콘)나 특수기호는 절대 사용하지 말고, 오직 한글과 영문 텍스트로만 매력적인 제목과 상세 설명을 작성해.
       2. 마크다운(` ```json ` 등)이나 부가 설명, 인삿말은 절대 금지. 오직 순수한 JSON 객체 하나만 반환해.
       3. 반드시 아래의 JSON Key 포맷을 정확히 지켜.
       {"title": "여기에 제목", "description": "여기에 설명"}
       """;
 
-      // 네트워크 지연 방지 (10초 타임아웃)
       final response = await model.generateContent([Content.text(prompt)]).timeout(
         const Duration(seconds: 10),
       );
 
       final responseText = response.text;
       if (responseText != null) {
-        // AI가 마크다운을 씌웠을 경우를 대비한 찌꺼기 제거 전처리
         String cleanJson = responseText.trim();
         if (cleanJson.startsWith('```json')) cleanJson = cleanJson.replaceFirst('```json', '');
         if (cleanJson.startsWith('```')) cleanJson = cleanJson.replaceFirst('```', '');
         if (cleanJson.endsWith('```')) cleanJson = cleanJson.substring(0, cleanJson.length - 3);
         cleanJson = cleanJson.trim();
 
-        // indexOf가 아닌 안전한 JSON 디코더 사용
         final Map<String, dynamic> parsedData = jsonDecode(cleanJson);
         
         if (parsedData.containsKey('title') && parsedData.containsKey('description')) {
@@ -174,12 +199,12 @@ class MapScreenState extends State<MapScreen> {
         ),
       );
     } catch (e) {
-      print("AI 에러: $e");
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('⚠️ AI 텍스트 생성에 실패했습니다. 올바른 키워드를 입력해주세요.'), 
-          backgroundColor: Colors.red
+        SnackBar(
+          content: Text('⚠️ 에러 원인: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
         ),
       );
     } finally {
@@ -198,9 +223,6 @@ class MapScreenState extends State<MapScreen> {
         SnackBar(
           content: Text("🔍 '$query' 검색 결과를 지도에 표시합니다.", style: const TextStyle(fontWeight: FontWeight.bold)),
           backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          duration: const Duration(seconds: 2),
         ),
       );
     }
@@ -289,7 +311,45 @@ class MapScreenState extends State<MapScreen> {
                   const Divider(height: 1),
                   Expanded(
                     child: filteredDocs.isEmpty
-                        ? const Center(child: Text("조건에 맞는 번개가 없어요 🥲", style: TextStyle(color: Colors.grey)))
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(20),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green[50],
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.bolt_rounded, size: 50, color: Colors.green),
+                                ),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  "주변에 진행 중인 번개가 없어요!",
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                                ),
+                                const SizedBox(height: 6),
+                                const Text(
+                                  "지도를 길게 눌러 첫 번째 번개를 만들어보세요.",
+                                  style: TextStyle(fontSize: 13, color: Colors.grey),
+                                ),
+                                const SizedBox(height: 20),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    Navigator.pop(context); 
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green,
+                                    foregroundColor: Colors.white,
+                                    elevation: 0,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                                  ),
+                                  child: const Text("지도에서 직접 만들기", style: TextStyle(fontWeight: FontWeight.bold)),
+                                ),
+                              ],
+                            ),
+                          )
                         : ListView.builder(
                             controller: controller,
                             padding: const EdgeInsets.all(16),
@@ -380,30 +440,89 @@ class MapScreenState extends State<MapScreen> {
             ),
             const SizedBox(height: 25),
             SizedBox(
-              width: double.infinity, height: 55,
-              child: ElevatedButton(
-                onPressed: current < max
-                    ? () async {
-                        final user = FirebaseAuth.instance.currentUser;
-                        if (user != null) {
+                width: double.infinity, height: 55,
+                child: ElevatedButton(
+                  onPressed: current < max
+                      ? () async {
+                          final user = FirebaseAuth.instance.currentUser;
+                          if (user == null) return;
+
+                          // 💡 1. 여기서 내 MBTI와 방장의 MBTI를 가져옵니다 (예시 로직)
+                          // 실제로는 firestore 'users' 컬렉션에서 가져와야 하지만, 테스트를 위해 가상의 상황을 만듭니다.
+                          DocumentSnapshot myDoc = await _firestore.collection('users').doc(user.uid).get();
+                          String myMbti = (myDoc.data() as Map<String, dynamic>?)?['mbti'] ?? 'ENFP';
+                          
+                          // 방장의 MBTI를 가져옵니다 (현재 모임 데이터에 creatorId가 있다고 가정)
+                          String creatorId = data['creatorId'] ?? '';
+                          String creatorMbti = 'ISTJ'; // 임시 방장 MBTI
+                          if (creatorId.isNotEmpty) {
+                            DocumentSnapshot creatorDoc = await _firestore.collection('users').doc(creatorId).get();
+                            creatorMbti = (creatorDoc.data() as Map<String, dynamic>?)?['mbti'] ?? 'ISTJ';
+                          }
+
+                          // 💡 2. 극과 극 성향인지 재미로 체크 (E와 I, N과 S 등 극단적인 차이일 때)
+                          bool isExtremeMatch = (myMbti.startsWith('E') && creatorMbti.startsWith('I')) || 
+                                                (myMbti.startsWith('I') && creatorMbti.startsWith('E'));
+
+                          if (!mounted) return;
+
+                          // 💡 3. 상극일 경우 유쾌한 경고 팝업 띄우기!
+                          if (isExtremeMatch) {
+                            bool? proceed = await showDialog<bool>(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                title: const Row(
+                                  children: [
+                                    Text("🚨 앗, 잠깐만요!", style: TextStyle(fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
+                                content: Text(
+                                  "방장님은 [$creatorMbti]이고\n회원님은 [$myMbti]네요!\n\n텐션이 너무 달라서 기가 빨릴 수도 있는데, 그래도 용기 내서 참여하시겠어요? 😆",
+                                  style: const TextStyle(fontSize: 16, height: 1.4),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(context, false), // 도망가기
+                                    child: const Text("다음에 할게요 💦", style: TextStyle(color: Colors.grey)),
+                                  ),
+                                  ElevatedButton(
+                                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                                    onPressed: () => Navigator.pop(context, true), // 직진하기
+                                    child: const Text("도전할게요! 🔥"),
+                                  ),
+                                ],
+                              ),
+                            );
+
+                            // 유저가 취소를 누르면 여기서 함수 종료
+                            if (proceed != true) return;
+                          }
+
+                          // 💡 4. 경고를 통과했거나 무난한 궁합이면 원래대로 모임에 참여시킵니다.
                           await _firestore.collection('meetings').doc(docId).update({
                             'currentParticipants': FieldValue.increment(1),
                             'participants': FieldValue.arrayUnion([user.uid]),
                           });
                           final latestDoc = await _firestore.collection('meetings').doc(docId).get();
                           await ChatService().joinRoom(meetingId: docId, meetingData: latestDoc.data() ?? data);
-                          if (mounted) Navigator.pop(context);
+                          
+                          if (mounted) {
+                            Navigator.pop(context); // 바텀시트 닫기
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('🎉 번개 모임에 성공적으로 합류했습니다!')),
+                            );
+                          }
                         }
-                      }
-                    : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: current < max ? Colors.amber[400] : Colors.grey[300],
-                  foregroundColor: Colors.black87, elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: current < max ? Colors.amber[400] : Colors.grey[300],
+                    foregroundColor: Colors.black87, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                  ),
+                  child: Text(current < max ? "⚡ 이 번개 참여하기" : "아쉽지만 인원이 꽉 찼어요", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
-                child: Text(current < max ? "⚡ 이 번개 참여하기" : "아쉽지만 인원이 꽉 찼어요", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
-            ),
           ],
         ),
       ),
@@ -434,7 +553,17 @@ class MapScreenState extends State<MapScreen> {
                   children: _categories.map((category) {
                     return ChoiceChip(
                       label: Text(category), selected: _selectedCategory == category, selectedColor: Colors.green[200],
-                      onSelected: (bool selected) { setSheetState(() { if (selected) _selectedCategory = category; }); },
+                      onSelected: (bool selected) { 
+                        setSheetState(() { 
+                          if (selected && _selectedCategory != category) { 
+                            _selectedCategory = category; 
+                            _titleController.clear();
+                            _noteController.clear();
+                            _maxParticipants = 4;
+                            _selectedTime = null;
+                          } 
+                        }); 
+                      },
                     );
                   }).toList(),
                 ),
@@ -514,6 +643,49 @@ class MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_hasLocationPermission == null) {
+      return const Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(child: CircularProgressIndicator(color: Colors.green)),
+      );
+    }
+
+    if (_hasLocationPermission == false) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.location_off_rounded, size: 80, color: Colors.grey[400]),
+              const SizedBox(height: 20),
+              const Text(
+                '동네 번개를 찾으려면\n위치 권한이 꼭 필요해요!',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                '스마트폰 설정에서 위치 권한을 허용해 주세요.',
+                style: TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 30),
+              ElevatedButton.icon(
+                onPressed: () => Geolocator.openAppSettings(),
+                icon: const Icon(Icons.settings),
+                label: const Text('설정으로 이동하기'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return StreamBuilder<QuerySnapshot>(
       stream: _firestore.collection('meetings').snapshots(),
       builder: (context, snapshot) {
@@ -571,15 +743,17 @@ class MapScreenState extends State<MapScreen> {
           children: [
             GoogleMap(
               initialCameraPosition: CameraPosition(target: _cameraCenter, zoom: 14),
-              onMapCreated: (controller) => mapController = controller,
-              
-              // 💡 [디바운싱] 지도를 움직일 때는 타이머를 계속 취소시킵니다.
+              onMapCreated: (controller) {
+                mapController = controller;
+                if (_currentP != null && !_isFirstLocationFetched) {
+                  mapController!.animateCamera(CameraUpdate.newLatLngZoom(_currentP!, 13));
+                  _isFirstLocationFetched = true;
+                }
+              },
               onCameraMove: (CameraPosition position) {
                 _cameraCenter = position.target;
                 if (_debounce?.isActive ?? false) _debounce!.cancel();
               },
-              
-              // 💡 [디바운싱] 손가락을 떼고 화면이 멈춘 후 딱 0.5초(500ms) 뒤에만 검색을 실행합니다.
               onCameraIdle: () {
                 if (_debounce?.isActive ?? false) _debounce!.cancel();
                 _debounce = Timer(const Duration(milliseconds: 500), () {
@@ -588,7 +762,16 @@ class MapScreenState extends State<MapScreen> {
                   }
                 });
               },
-              
+              circles: {
+                Circle(
+                  circleId: const CircleId('search_radius_circle'),
+                  center: _cameraCenter,
+                  radius: _searchRadius, 
+                  fillColor: Colors.green.withOpacity(0.1), 
+                  strokeColor: Colors.green.withOpacity(0.6), 
+                  strokeWidth: 2,
+                )
+              },
               markers: {...markers, if (_tempMarker != null) _tempMarker!},
               onLongPress: (LatLng tappedPoint) {
                 setState(() => _tempMarker = Marker(markerId: const MarkerId("temp"), position: tappedPoint, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed)));
@@ -599,37 +782,46 @@ class MapScreenState extends State<MapScreen> {
               zoomControlsEnabled: true, mapToolbarEnabled: false, compassEnabled: true,
             ),
 
+            // 💡 [UI 업그레이드] 반투명 유리 질감이 적용된 상단 검색바
             Positioned(
               top: 50, left: 20, right: 20,
               child: Column(
                 children: [
-                  GestureDetector(
-                    onTap: _showSearchDialog,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white, borderRadius: BorderRadius.circular(30),
-                        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.search, color: Colors.green),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _searchQuery.isEmpty ? "동네 주변 번개 모임 찾기" : "검색어: '$_searchQuery'",
-                              style: TextStyle(color: _searchQuery.isEmpty ? Colors.grey : Colors.green[800], fontWeight: _searchQuery.isEmpty ? FontWeight.normal : FontWeight.bold, fontSize: 16),
-                            ),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(30),
+                    child: BackdropFilter(
+                      filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                      child: GestureDetector(
+                        onTap: _showSearchDialog,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.85),
+                            borderRadius: BorderRadius.circular(30),
+                            border: Border.all(color: Colors.white.withOpacity(0.3)),
+                            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
                           ),
-                          if (_searchQuery.isNotEmpty) 
-                            GestureDetector(
-                              onTap: () {
-                                setState(() { _searchQuery = ''; _searchController.clear(); });
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("검색 필터를 해제했습니다."), duration: Duration(seconds: 1)));
-                              },
-                              child: const Icon(Icons.cancel, color: Colors.grey, size: 20),
-                            ),
-                        ],
+                          child: Row(
+                            children: [
+                              const Icon(Icons.search, color: Colors.green),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  _searchQuery.isEmpty ? "동네 주변 번개 모임 찾기" : "검색어: '$_searchQuery'",
+                                  style: TextStyle(color: _searchQuery.isEmpty ? Colors.grey : Colors.green[800], fontWeight: _searchQuery.isEmpty ? FontWeight.normal : FontWeight.bold, fontSize: 16),
+                                ),
+                              ),
+                              if (_searchQuery.isNotEmpty) 
+                                GestureDetector(
+                                  onTap: () {
+                                    setState(() { _searchQuery = ''; _searchController.clear(); });
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("검색 필터를 해제했습니다."), duration: Duration(seconds: 1)));
+                                  },
+                                  child: const Icon(Icons.cancel, color: Colors.grey, size: 20),
+                                ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -657,30 +849,42 @@ class MapScreenState extends State<MapScreen> {
                 heroTag: "myLocationBtn", mini: true, backgroundColor: Colors.white,
                 onPressed: () {
                   if (mapController != null && _currentP != null) {
-                    mapController!.animateCamera(CameraUpdate.newLatLngZoom(_currentP!, 16));
+                    mapController!.animateCamera(CameraUpdate.newLatLngZoom(_currentP!, 13));
                   }
                 },
                 child: const Icon(Icons.my_location, color: Colors.blue),
               ),
             ),
 
+            // 💡 [UI 업그레이드] 반투명 유리 질감이 적용된 하단 목록보기 버튼
             Positioned(
               bottom: 40,
               left: 0,
               right: 0,
               child: Center(
-                child: ElevatedButton.icon(
-                  onPressed: () => _showListBottomSheet(filteredDocs),
-                  icon: const Icon(Icons.list, color: Colors.white, size: 20),
-                  label: Text(
-                    '목록 보기 (${filteredDocs.length})', 
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15)
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.black87,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                    elevation: 6,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(30),
+                  child: BackdropFilter(
+                    filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.65), 
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      child: ElevatedButton.icon(
+                        onPressed: () => _showListBottomSheet(filteredDocs),
+                        icon: const Icon(Icons.list, color: Colors.white, size: 20),
+                        label: Text(
+                          '목록 보기 (${filteredDocs.length})', 
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15)
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent, 
+                          shadowColor: Colors.transparent, 
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),

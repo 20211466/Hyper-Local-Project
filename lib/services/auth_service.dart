@@ -1,11 +1,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-// 💡 [추가] 파이어베이스 데이터베이스(Firestore)를 사용하기 위해 임포트 추가
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  // 💡 데이터베이스 인스턴스 추가
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
   final GoogleSignIn _googleSignIn = GoogleSignIn(
@@ -23,10 +21,14 @@ class AuthService {
     return _auth.signInWithEmailAndPassword(email: email, password: password);
   }
 
+  // 💡 [핵심 수정] 회원가입 시 성별, 나이, MBTI를 추가로 받습니다.
   Future<UserCredential> signUpWithEmail({
     required String email,
     required String password,
     required String nickname,
+    required String gender, // 추가: '남성' 또는 '여성'
+    required int age,       // 추가: 실제 나이 (예: 24)
+    required String mbti,   // 추가: MBTI (예: 'ENFP')
   }) async {
     // 1. Firebase Auth로 이메일 계정 생성
     final credential = await _auth.createUserWithEmailAndPassword(
@@ -36,13 +38,21 @@ class AuthService {
     await credential.user?.updateDisplayName(nickname);
     await credential.user?.reload();
 
-    // 💡 [추가] 2. 회원가입 완료 후 Firestore 'users' 컬렉션에 내 정보와 매너 볼트 0점 기록!
+    // 💡 [개인정보 보호 로직] 실제 나이를 '20대', '30대' 형태로 변환합니다.
+    // 예: 24 ~/ 10 = 2 -> 2 * 10 = 20 -> '20대'
+    String ageGroup = '${(age ~/ 10) * 10}대';
+
+    // 2. 가입 완료 후 Firestore 'users' 컬렉션에 정보 저장
     if (credential.user != null) {
       await _firestore.collection('users').doc(credential.user!.uid).set({
         'uid': credential.user!.uid,
         'email': email,
         'displayName': nickname,
-        'mannerVolt': 0, // 매너 볼트 기본값 설정!
+        'gender': gender,         // 성별
+        'age': age,               // 실제 나이 (내부 관리용)
+        'ageGroup': ageGroup,     // 앱 화면에 표시될 나이대 ('20대', '30대')
+        'mbti': mbti.toUpperCase(), // 소문자로 입력해도 대문자로 저장
+        'mannerVolt': 0,          // 매너 볼트 기본값 설정!
         'createdAt': FieldValue.serverTimestamp(),
       });
     }
@@ -63,18 +73,22 @@ class AuthService {
     // 1. 구글 자격증명으로 Firebase Auth 로그인
     final userCredential = await _auth.signInWithCredential(credential);
     
-    // 💡 [추가] 2. 구글 로그인 시 처음 온 유저라면 Firestore에 매너 볼트 0점 방 만들어주기
+    // 2. 구글 로그인 시 처음 온 유저라면 Firestore에 임시 방 만들어주기
     if (userCredential.user != null) {
       final userRef = _firestore.collection('users').doc(userCredential.user!.uid);
       final docSnapshot = await userRef.get();
       
-      // DB에 문서가 없다면 (처음 구글 로그인하는 회원이라면)
+      // DB에 문서가 없다면 (처음 구글 로그인하는 회원이라면 기본값/비공개 세팅)
       if (!docSnapshot.exists) {
         await userRef.set({
           'uid': userCredential.user!.uid,
           'email': userCredential.user!.email,
           'displayName': userCredential.user!.displayName ?? '구글 유저',
-          'mannerVolt': 0, // 매너 볼트 기본값 설정!
+          'gender': '비공개',
+          'age': 0,
+          'ageGroup': '비공개',
+          'mbti': '비공개',
+          'mannerVolt': 0, 
           'createdAt': FieldValue.serverTimestamp(),
         });
       }

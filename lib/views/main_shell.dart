@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
 import 'map_screen.dart';
-import 'gathering_list_screen.dart'; // 💡 팀원이 새로 만든 목록 화면 가져오기
-import '../screens/my_meetups_screen.dart'; // 경로가 맞는지 확인해 주세요!
+import 'gathering_list_screen.dart'; 
+import '../screens/my_meetups_screen.dart'; 
 import 'chat_list_screen.dart';
 import '../services/chat_service.dart';
 
@@ -14,14 +19,72 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
+  
+  // 💡 화면 상단에 알림 팝업을 띄우기 위한 플러그인
+  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
 
-  // 💡 팀장님의 4개 탭 구조를 유지하되, 1번 인덱스에 팀원의 목록 화면을 매핑합니다.
   final List<Widget> _screens = [
-    const MapScreen(), // 0번 탭: 지도
-    GatheringListScreen(), // 1번 탭: 모임 목록 (팀원 코드)
-    ChatListScreen(), // 2번 탭: 채팅
-    const MyMeetupsScreen(), // 3번 탭: 내 정보
+    const MapScreen(), 
+    GatheringListScreen(), 
+    ChatListScreen(), 
+    const MyMeetupsScreen(), 
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _setupPushNotifications(); // 💡 앱이 켜지면 푸시 알림 세팅 시작
+  }
+
+  Future<void> _setupPushNotifications() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    // 1. 내 스마트폰의 고유 주소(토큰)를 가져와서 DB에 저장
+    String? token = await FirebaseMessaging.instance.getToken();
+    if (token != null) {
+      _saveTokenToDB(user.uid, token);
+    }
+
+    // 2. 시간이 지나 토큰이 만료/변경되면 자동으로 DB 업데이트
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+      _saveTokenToDB(user.uid, newToken);
+    });
+
+    // 3. 앱을 켜고 보고 있을 때(포그라운드) 알림을 화면에 띄우기 위한 초기화
+    const AndroidInitializationSettings androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings initSettings = InitializationSettings(android: androidInit);
+    
+    // 💡 [수정 1] 최신 버전에 맞게 이름표(initializationSettings:) 추가
+    await _localNotifications.initialize(settings: initSettings); 
+
+    // 4. 앱 사용 중 알림 메시지가 날아오면 즉시 화면 상단에 팝업 띄우기
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      if (message.notification != null) {
+        // 💡 [수정 2] 최신 버전에 맞게 이름표(id:, title:, body:, notificationDetails:) 추가
+        _localNotifications.show(
+          id: message.hashCode,
+          title: message.notification!.title,
+          body: message.notification!.body,
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'lightning_app_channel', 
+              '번개 모임 알림',
+              importance: Importance.max,
+              priority: Priority.high,
+            ),
+          ),
+        );
+      }
+    });
+  }
+
+  // 💡 users 컬렉션에 fcmToken 저장 (기존 데이터를 보존하며 덮어쓰기)
+  void _saveTokenToDB(String uid, String token) {
+    FirebaseFirestore.instance.collection('users').doc(uid).set({
+      'fcmToken': token,
+    }, SetOptions(merge: true));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -37,12 +100,9 @@ class _MainShellState extends State<MainShell> {
             _selectedIndex = index;
           });
         },
-        items: [
+        items: const [
           BottomNavigationBarItem(icon: Icon(Icons.map), label: '지도'),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.list),
-            label: '모임 목록',
-          ), // 💡 탭 메뉴 추가
+          BottomNavigationBarItem(icon: Icon(Icons.list), label: '모임 목록'),
           BottomNavigationBarItem(icon: _ChatTabIcon(), label: '채팅'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: '내 정보'),
         ],
@@ -70,10 +130,7 @@ class _ChatTabIcon extends StatelessWidget {
                 right: -8,
                 top: -6,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 5,
-                    vertical: 2,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                   decoration: BoxDecoration(
                     color: Colors.red,
                     borderRadius: BorderRadius.circular(999),
