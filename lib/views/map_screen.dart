@@ -38,6 +38,10 @@ class MapScreenState extends State<MapScreen> {
   Timer? _debounce;
   BitmapDescriptor? _boltIcon;
 
+  // 💡 [추가] 카테고리별 커스텀 마커를 저장할 맵
+  final Map<String, BitmapDescriptor> _categoryIcons = {};
+  final Map<String, BitmapDescriptor> _urgentCategoryIcons = {};
+
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _noteController = TextEditingController();
   String _selectedCategory = '기타';
@@ -51,7 +55,17 @@ class MapScreenState extends State<MapScreen> {
   final TextEditingController _searchController = TextEditingController();
 
   LatLng _cameraCenter = const LatLng(37.9142, 127.1578); 
-  final double _searchRadius = 5000; 
+  
+  // 💡 [최종 수정] 직선거리 vs 실제 이동시간을 고려한 '진짜 30분 컷' 동네 번개 반경!
+  double _currentRadius = 1500.0; // 기본 도보 반경 1.5km로 축소
+  String _selectedTransport = '도보'; 
+
+  final List<Map<String, dynamic>> _transportOptions = [
+    {'label': '도보', 'icon': Icons.directions_walk, 'radius': 1500.0},     // 1.5km
+    {'label': '자전거', 'icon': Icons.directions_bike, 'radius': 3000.0},     // 3km
+    {'label': '대중교통', 'icon': Icons.directions_bus, 'radius': 5000.0},     // 5km
+    {'label': '자동차', 'icon': Icons.directions_car, 'radius': 8000.0},     // 8km
+  ];
 
   void openCreationSheet() {
     LatLng targetPos = _currentP ?? const LatLng(37.9142, 127.1578);
@@ -62,6 +76,7 @@ class MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     _loadBoltIcon();
+    _loadAllCustomMarkers(); // 💡 [추가] 앱 시작 시 커스텀 마커 미리 그리기
     _checkPermissionAndFetchLocation(); 
   }
 
@@ -73,6 +88,90 @@ class MapScreenState extends State<MapScreen> {
     _searchController.dispose();
     _debounce?.cancel(); 
     super.dispose();
+  }
+
+ // 💡 [사이즈 최적화] 지도와 어울리도록 전체 크기를 아담하고 세련되게 축소했습니다!
+  Future<BitmapDescriptor> _createCategoryMarker(String category, bool isUrgent) async {
+    final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(pictureRecorder);
+    
+    // 💡 160 -> 110으로 전체 도화지 사이즈 축소
+    const double size = 110; 
+
+    IconData categoryIcon = Icons.bolt;
+    Color baseColor = Colors.green;
+    
+    switch (category) {
+      case '운동': categoryIcon = Icons.directions_run; baseColor = Colors.blue; break;
+      case '식사': categoryIcon = Icons.restaurant; baseColor = Colors.orange; break;
+      case '공부': categoryIcon = Icons.menu_book; baseColor = Colors.purple; break;
+      case '게임': categoryIcon = Icons.sports_esports; baseColor = Colors.indigo; break;
+      case '산책': categoryIcon = Icons.pets; baseColor = Colors.teal; break;
+      case '기타': categoryIcon = Icons.bolt; baseColor = Colors.green; break;
+    }
+
+    if (isUrgent) {
+      baseColor = Colors.redAccent; 
+    }
+
+    // 💡 원의 반지름과 중심점 위치 조정 (기존 10.0 두께에서 6.0으로 얇게)
+    final double circleRadius = size / 3.5; 
+    final Offset circleCenter = const Offset(size / 2, size / 2 + 10);
+
+    // 1. 그림자
+    final shadowPaint = Paint()..color = Colors.black26..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
+    canvas.drawCircle(circleCenter, circleRadius, shadowPaint);
+
+    // 2. 흰색 배경
+    final bgPaint = Paint()..color = Colors.white;
+    canvas.drawCircle(circleCenter, circleRadius, bgPaint);
+
+    // 3. 테두리 (strokeWidth 축소)
+    final borderPaint = Paint()..color = baseColor..style = PaintingStyle.stroke..strokeWidth = 6.0;
+    canvas.drawCircle(circleCenter, circleRadius, borderPaint);
+
+    // 4. 아이콘 (fontSize 45 -> 28로 축소)
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+    textPainter.text = TextSpan(
+      text: String.fromCharCode(categoryIcon.codePoint),
+      style: TextStyle(
+        fontSize: 28,
+        fontFamily: categoryIcon.fontFamily,
+        package: categoryIcon.fontPackage,
+        color: baseColor,
+      ),
+    );
+    textPainter.layout();
+    textPainter.paint(canvas, Offset((size - textPainter.width) / 2, (size / 2 + 10) - textPainter.height / 2));
+
+    // 5. 마감 임박 뱃지도 아담하게 축소
+    if (isUrgent) {
+      final badgePaint = Paint()..color = Colors.redAccent;
+      // 뱃지 넓이 100 -> 70, 높이 42 -> 26 축소
+      final Rect badgeRect = Rect.fromCenter(center: const Offset(size / 2, 18), width: 70, height: 26);
+      canvas.drawRRect(RRect.fromRectAndRadius(badgeRect, const Radius.circular(12)), badgePaint);
+
+      final badgeText = TextPainter(textDirection: TextDirection.ltr);
+      badgeText.text = const TextSpan(
+        text: '마감 임박!', 
+        style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold) // 폰트 사이즈 18 -> 11 축소
+      );
+      badgeText.layout();
+      badgeText.paint(canvas, Offset((size - badgeText.width) / 2, 18 - badgeText.height / 2));
+    }
+
+    final img = await pictureRecorder.endRecording().toImage(size.toInt(), size.toInt());
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+  }
+
+  // 💡 [추가] 모든 카테고리별 커스텀 마커 로드
+  Future<void> _loadAllCustomMarkers() async {
+    for (var cat in _categories) {
+      _categoryIcons[cat] = await _createCategoryMarker(cat, false);
+      _urgentCategoryIcons[cat] = await _createCategoryMarker(cat, true);
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadBoltIcon() async {
@@ -447,26 +546,21 @@ class MapScreenState extends State<MapScreen> {
                           final user = FirebaseAuth.instance.currentUser;
                           if (user == null) return;
 
-                          // 💡 1. 여기서 내 MBTI와 방장의 MBTI를 가져옵니다 (예시 로직)
-                          // 실제로는 firestore 'users' 컬렉션에서 가져와야 하지만, 테스트를 위해 가상의 상황을 만듭니다.
                           DocumentSnapshot myDoc = await _firestore.collection('users').doc(user.uid).get();
                           String myMbti = (myDoc.data() as Map<String, dynamic>?)?['mbti'] ?? 'ENFP';
                           
-                          // 방장의 MBTI를 가져옵니다 (현재 모임 데이터에 creatorId가 있다고 가정)
                           String creatorId = data['creatorId'] ?? '';
-                          String creatorMbti = 'ISTJ'; // 임시 방장 MBTI
+                          String creatorMbti = 'ISTJ'; 
                           if (creatorId.isNotEmpty) {
                             DocumentSnapshot creatorDoc = await _firestore.collection('users').doc(creatorId).get();
                             creatorMbti = (creatorDoc.data() as Map<String, dynamic>?)?['mbti'] ?? 'ISTJ';
                           }
 
-                          // 💡 2. 극과 극 성향인지 재미로 체크 (E와 I, N과 S 등 극단적인 차이일 때)
                           bool isExtremeMatch = (myMbti.startsWith('E') && creatorMbti.startsWith('I')) || 
                                                 (myMbti.startsWith('I') && creatorMbti.startsWith('E'));
 
                           if (!mounted) return;
 
-                          // 💡 3. 상극일 경우 유쾌한 경고 팝업 띄우기!
                           if (isExtremeMatch) {
                             bool? proceed = await showDialog<bool>(
                               context: context,
@@ -483,23 +577,21 @@ class MapScreenState extends State<MapScreen> {
                                 ),
                                 actions: [
                                   TextButton(
-                                    onPressed: () => Navigator.pop(context, false), // 도망가기
+                                    onPressed: () => Navigator.pop(context, false), 
                                     child: const Text("다음에 할게요 💦", style: TextStyle(color: Colors.grey)),
                                   ),
                                   ElevatedButton(
                                     style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                                    onPressed: () => Navigator.pop(context, true), // 직진하기
+                                    onPressed: () => Navigator.pop(context, true), 
                                     child: const Text("도전할게요! 🔥"),
                                   ),
                                 ],
                               ),
                             );
 
-                            // 유저가 취소를 누르면 여기서 함수 종료
                             if (proceed != true) return;
                           }
 
-                          // 💡 4. 경고를 통과했거나 무난한 궁합이면 원래대로 모임에 참여시킵니다.
                           await _firestore.collection('meetings').doc(docId).update({
                             'currentParticipants': FieldValue.increment(1),
                             'participants': FieldValue.arrayUnion([user.uid]),
@@ -508,7 +600,7 @@ class MapScreenState extends State<MapScreen> {
                           await ChatService().joinRoom(meetingId: docId, meetingData: latestDoc.data() ?? data);
                           
                           if (mounted) {
-                            Navigator.pop(context); // 바텀시트 닫기
+                            Navigator.pop(context); 
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('🎉 번개 모임에 성공적으로 합류했습니다!')),
                             );
@@ -641,6 +733,53 @@ class MapScreenState extends State<MapScreen> {
     setState(() { _isSheetOpen = false; _tempMarker = null; });
   }
 
+  // 💡 [UI 추가] 지도 상단에 띄울 '이동 수단 필터 위젯'
+  Widget _buildTransportFilter() {
+    return SizedBox(
+      height: 42,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        itemCount: _transportOptions.length,
+        itemBuilder: (context, index) {
+          final option = _transportOptions[index];
+          final isSelected = _selectedTransport == option['label'];
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              avatar: Icon(
+                option['icon'], 
+                size: 16, 
+                color: isSelected ? Colors.white : Colors.green[800]
+              ),
+              label: Text(
+                '${option['label']} ${(option['radius'] / 1000).toInt()}km',
+                style: TextStyle(
+                  color: isSelected ? Colors.white : Colors.black87,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  fontSize: 13,
+                ),
+              ),
+              selected: isSelected,
+              selectedColor: Colors.green,
+              backgroundColor: Colors.white.withOpacity(0.95),
+              elevation: isSelected ? 4 : 1,
+              showCheckmark: false, // 기본 체크마크 숨김
+              onSelected: (bool selected) {
+                if (selected) {
+                  setState(() {
+                    _selectedTransport = option['label'];
+                    _currentRadius = option['radius'];
+                  });
+                }
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_hasLocationPermission == null) {
@@ -707,10 +846,18 @@ class MapScreenState extends State<MapScreen> {
 
         for (var doc in snapshot.data!.docs) {
           final data = doc.data() as Map<String, dynamic>;
+          final category = data['category'] ?? '기타';
+          bool isUrgent = false; 
           
           if (data['deadline'] != null) {
             DateTime deadline = (data['deadline'] as Timestamp).toDate();
             if (now.isAfter(deadline)) continue;
+
+            // 💡 [수정됨] 마감 10분 전일 때만 빨간색 뱃지 띄우기 로직 추가
+            final diff = deadline.difference(now);
+            if (diff.inMinutes <= 10 && diff.inMinutes > 0) {
+              isUrgent = true;
+            }
           }
 
           if (_searchQuery.isNotEmpty) {
@@ -725,14 +872,19 @@ class MapScreenState extends State<MapScreen> {
             data['lat'], data['lng']
           );
 
-          if (distanceInMeters > _searchRadius) {
+          if (distanceInMeters > _currentRadius) {
             continue; 
           }
+
+          // 💡 [추가] 생성된 카테고리별 마커 적용 (없으면 기존 번개 마커 사용)
+          BitmapDescriptor markerIcon = isUrgent 
+              ? (_urgentCategoryIcons[category] ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed))
+              : (_categoryIcons[category] ?? _boltIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen));
 
           markers.add(
             Marker(
               markerId: MarkerId(doc.id), position: LatLng(data['lat'], data['lng']),
-              icon: _boltIcon ?? BitmapDescriptor.defaultMarker,
+              icon: markerIcon, 
               onTap: () => _onMarkerTapped(doc.id, data),
             ),
           );
@@ -766,7 +918,7 @@ class MapScreenState extends State<MapScreen> {
                 Circle(
                   circleId: const CircleId('search_radius_circle'),
                   center: _cameraCenter,
-                  radius: _searchRadius, 
+                  radius: _currentRadius,
                   fillColor: Colors.green.withOpacity(0.1), 
                   strokeColor: Colors.green.withOpacity(0.6), 
                   strokeWidth: 2,
@@ -782,50 +934,57 @@ class MapScreenState extends State<MapScreen> {
               zoomControlsEnabled: true, mapToolbarEnabled: false, compassEnabled: true,
             ),
 
-            // 💡 [UI 업그레이드] 반투명 유리 질감이 적용된 상단 검색바
             Positioned(
-              top: 50, left: 20, right: 20,
+              top: 50, left: 0, right: 0, 
               child: Column(
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(30),
-                    child: BackdropFilter(
-                      filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                      child: GestureDetector(
-                        onTap: _showSearchDialog,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.85),
-                            borderRadius: BorderRadius.circular(30),
-                            border: Border.all(color: Colors.white.withOpacity(0.3)),
-                            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.search, color: Colors.green),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  _searchQuery.isEmpty ? "동네 주변 번개 모임 찾기" : "검색어: '$_searchQuery'",
-                                  style: TextStyle(color: _searchQuery.isEmpty ? Colors.grey : Colors.green[800], fontWeight: _searchQuery.isEmpty ? FontWeight.normal : FontWeight.bold, fontSize: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(30),
+                      child: BackdropFilter(
+                        filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                        child: GestureDetector(
+                          onTap: _showSearchDialog,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.85),
+                              borderRadius: BorderRadius.circular(30),
+                              border: Border.all(color: Colors.white.withOpacity(0.3)),
+                              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.search, color: Colors.green),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    _searchQuery.isEmpty ? "동네 주변 번개 모임 찾기" : "검색어: '$_searchQuery'",
+                                    style: TextStyle(color: _searchQuery.isEmpty ? Colors.grey : Colors.green[800], fontWeight: _searchQuery.isEmpty ? FontWeight.normal : FontWeight.bold, fontSize: 16),
+                                  ),
                                 ),
-                              ),
-                              if (_searchQuery.isNotEmpty) 
-                                GestureDetector(
-                                  onTap: () {
-                                    setState(() { _searchQuery = ''; _searchController.clear(); });
-                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("검색 필터를 해제했습니다."), duration: Duration(seconds: 1)));
-                                  },
-                                  child: const Icon(Icons.cancel, color: Colors.grey, size: 20),
-                                ),
-                            ],
+                                if (_searchQuery.isNotEmpty) 
+                                  GestureDetector(
+                                    onTap: () {
+                                      setState(() { _searchQuery = ''; _searchController.clear(); });
+                                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("검색 필터를 해제했습니다."), duration: Duration(seconds: 1)));
+                                    },
+                                    child: const Icon(Icons.cancel, color: Colors.grey, size: 20),
+                                  ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
+                  
+                  _buildTransportFilter(),
+                  
+                  const SizedBox(height: 12),
+                  
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
@@ -834,8 +993,8 @@ class MapScreenState extends State<MapScreen> {
                     ),
                     child: Text(
                       _searchQuery.isEmpty 
-                          ? "📍 화면 중심 기준 5km 이내 번개" 
-                          : "🔍 '$_searchQuery' 검색 결과 (화면 중심 5km)",
+                          ? "📍 화면 중심 기준 ${(_currentRadius / 1000).toInt()}km 이내 번개" 
+                          : "🔍 '$_searchQuery' 검색 결과 (화면 중심 ${(_currentRadius / 1000).toInt()}km)",
                       style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -856,7 +1015,6 @@ class MapScreenState extends State<MapScreen> {
               ),
             ),
 
-            // 💡 [UI 업그레이드] 반투명 유리 질감이 적용된 하단 목록보기 버튼
             Positioned(
               bottom: 40,
               left: 0,
