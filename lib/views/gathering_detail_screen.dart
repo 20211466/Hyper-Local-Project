@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_generative_ai/google_generative_ai.dart'; // 💡 AI 사용을 위한 임포트 추가
-import 'dart:convert'; // 💡 JSON 파싱을 위한 임포트 추가
+import 'package:google_generative_ai/google_generative_ai.dart'; 
+import 'dart:convert'; 
 import '../models/gathering_model.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
@@ -128,6 +128,9 @@ class GatheringDetailScreen extends StatelessWidget {
                                       final gender = userData['gender'] ?? '비공개';
                                       final mbti = userData['mbti'] ?? '비공개';
                                       final mannerVolt = userData['mannerVolt'] ?? 0;
+                                      
+                                      // 💡 [핵심 방어 로직] 모임 참석 횟수가 3회 이하면 뉴비로 간주! (필드가 없으면 기본값 0)
+                                      final meetingCount = userData['meetingCount'] ?? 0;
 
                                       return ListTile(
                                         contentPadding: EdgeInsets.zero,
@@ -135,7 +138,23 @@ class GatheringDetailScreen extends StatelessWidget {
                                           backgroundColor: Colors.green[50],
                                           child: const Icon(Icons.person, color: Colors.green),
                                         ),
-                                        title: Text(nickname, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                        // 💡 이름 옆에 조건부로 뉴비 뱃지 달아주기
+                                        title: Row(
+                                          children: [
+                                            Text(nickname, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                            if (meetingCount <= 3) ...[
+                                              const SizedBox(width: 6),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.green[100],
+                                                  borderRadius: BorderRadius.circular(4),
+                                                ),
+                                                child: Text('🌱 동네 뉴비', style: TextStyle(fontSize: 10, color: Colors.green[800], fontWeight: FontWeight.bold)),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
                                         // 💡 프로필 뱃지 출력 (나이대, 성별, MBTI, 매너볼트)
                                         subtitle: Wrap(
                                           spacing: 6,
@@ -187,6 +206,12 @@ class GatheringDetailScreen extends StatelessWidget {
                                 'participants': FieldValue.arrayUnion([currentUserUid]),
                                 'currentParticipants': FieldValue.increment(1),
                               });
+                              
+                              // 💡 [핵심 연동] 참여할 때 해당 유저의 meetingCount(참여 횟수)도 1 증가시켜줍니다!
+                              await FirebaseFirestore.instance.collection('users').doc(currentUserUid).set({
+                                'meetingCount': FieldValue.increment(1)
+                              }, SetOptions(merge: true));
+
                               if (context.mounted) _showSnackBar(context, "🎉 참여가 완료되었습니다!", Colors.green);
                             }
                           } catch (e) {
@@ -247,7 +272,7 @@ class GatheringDetailScreen extends StatelessWidget {
   }
 }
 
-// 💡 [2단계 추가됨] AI 매칭 점수를 분석하고 예쁘게 보여주는 커스텀 위젯
+// 💡 AI 매칭 점수를 분석하고 예쁘게 보여주는 커스텀 위젯
 class AiMatchingCard extends StatefulWidget {
   final String meetingTitle;
   final String meetingDescription;
