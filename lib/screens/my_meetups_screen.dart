@@ -229,11 +229,130 @@ class _MyMeetupsScreenState extends State<MyMeetupsScreen> {
     );
   }
 
+  // 💡 [회원 탈퇴] 1단계: 정말 탈퇴할 것인지 최종 확인
+  Future<void> _confirmDeleteAccount(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('회원 탈퇴', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text(
+          '정말 탈퇴하시겠어요?\n\n'
+          '내가 만든 모임과 참여 기록, 매너 볼트, 프로필 정보가 모두 삭제되며 복구할 수 없습니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('탈퇴하기', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !context.mounted) return;
+    await _performAccountDeletion(context);
+  }
+
+  // 💡 [회원 탈퇴] 2단계: 실제 삭제 실행. 재인증이 필요하면 재인증 흐름으로 넘어감
+  Future<void> _performAccountDeletion(BuildContext context) async {
+    final authService = AuthService();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      await authService.deleteAccount();
+      if (context.mounted) Navigator.pop(context); // 로딩 닫기
+      // 탈퇴 성공 시 AuthGate가 로그인 상태 변화를 감지해 자동으로 로그인 화면으로 전환합니다.
+    } on FirebaseAuthException catch (e) {
+      if (context.mounted) Navigator.pop(context); // 로딩 닫기
+      if (e.code == 'requires-recent-login') {
+        if (context.mounted) await _reauthenticateAndRetry(context, authService);
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(authService.messageFor(e))));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('탈퇴 처리 중 오류가 발생했습니다: $e')));
+      }
+    }
+  }
+
+  // 💡 [회원 탈퇴] 3단계: 오래된 로그인 세션일 때 본인 확인 후 탈퇴 재시도
+  Future<void> _reauthenticateAndRetry(BuildContext context, AuthService authService) async {
+    if (authService.isGoogleAccount) {
+      try {
+        await authService.reauthenticate();
+        if (context.mounted) await _performAccountDeletion(context);
+      } catch (_) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('재인증에 실패했습니다. 다시 시도해주세요.')),
+          );
+        }
+      }
+      return;
+    }
+
+    final passwordController = TextEditingController();
+    final password = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('본인 확인'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('보안을 위해 비밀번호를 다시 입력해주세요.', style: TextStyle(fontSize: 13, color: Colors.black54)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: '비밀번호', border: OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('취소', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(context, passwordController.text),
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
+
+    if (password == null || password.isEmpty || !context.mounted) return;
+
+    try {
+      await authService.reauthenticate(password: password);
+      if (context.mounted) await _performAccountDeletion(context);
+    } on FirebaseAuthException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(authService.messageFor(e))));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return const Scaffold(body: Center(child: Text('로그인이 필요합니다.')));
-    
+
     final authService = AuthService();
     final firestore = FirebaseFirestore.instance;
 
@@ -253,6 +372,11 @@ class _MyMeetupsScreenState extends State<MyMeetupsScreen> {
               icon: const Icon(Icons.logout),
               tooltip: '로그아웃',
               onPressed: () => authService.signOut(),
+            ),
+            IconButton(
+              icon: const Icon(Icons.no_accounts_outlined, color: Colors.redAccent),
+              tooltip: '회원 탈퇴',
+              onPressed: () => _confirmDeleteAccount(context),
             ),
           ],
           bottom: const TabBar(

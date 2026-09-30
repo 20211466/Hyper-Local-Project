@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'chat_service.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -189,6 +190,88 @@ class AuthService {
     await _auth.signOut();
   }
 
+  // ===================== 회원 탈퇴 =====================
+
+  /// 구글 계정으로 로그인한 유저인지 여부. 재인증 방식을 결정할 때 사용합니다.
+  bool get isGoogleAccount {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+    return user.providerData.any((p) => p.providerId == 'google.com');
+  }
+
+  /// 탈퇴/재인증처럼 민감한 작업 직전에 로그인 상태를 다시 확인합니다.
+  /// 이메일 계정은 [password]가 필요하고, 구글 계정은 로그인 팝업을 다시 띄웁니다.
+  Future<void> reauthenticate({String? password}) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    if (isGoogleAccount) {
+      final googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        throw FirebaseAuthException(code: 'reauth-cancelled', message: '재인증이 취소되었습니다.');
+      }
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+      await user.reauthenticateWithCredential(credential);
+    } else {
+      if (password == null || password.isEmpty) {
+        throw FirebaseAuthException(code: 'reauth-password-required', message: '비밀번호를 입력해주세요.');
+      }
+      final credential = EmailAuthProvider.credential(email: user.email!, password: password);
+      await user.reauthenticateWithCredential(credential);
+    }
+  }
+
+  /// 회원 탈퇴: 내가 만든 모임 삭제, 참여 중인 모임에서 나가기(인원수/채팅방 동기화),
+  /// 프로필(Firestore) 삭제, Firebase Auth 계정 삭제까지 한 번에 처리합니다.
+  ///
+  /// 로그인한 지 오래된 세션이면 FirebaseAuthException(code: 'requires-recent-login')이
+  /// 발생할 수 있습니다 — 이때는 [reauthenticate]로 재인증 후 다시 호출해야 합니다.
+  Future<void> deleteAccount() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    final uid = user.uid;
+    final chatService = ChatService();
+
+    // 1. 내가 만든 모임 삭제
+    final createdMeetings = await _firestore.collection('meetings').where('creatorId', isEqualTo: uid).get();
+    for (final doc in createdMeetings.docs) {
+      await doc.reference.delete();
+      try {
+        await chatService.leaveRoom(doc.id);
+      } catch (_) {}
+    }
+
+    // 2. 참여 중인(내가 만들지 않은) 모임에서 나가기 — 인원수 감소 + 채팅방 나가기
+    final joinedMeetings = await _firestore.collection('meetings').where('participants', arrayContains: uid).get();
+    for (final doc in joinedMeetings.docs) {
+      if (doc.data()['creatorId'] == uid) continue; // 이미 1번에서 삭제됨
+      await doc.reference.update({
+        'participants': FieldValue.arrayRemove([uid]),
+        'currentParticipants': FieldValue.increment(-1),
+      });
+      try {
+        await chatService.leaveRoom(doc.id);
+      } catch (_) {}
+    }
+
+    // 3. 내 프로필(Firestore users 문서) 삭제
+    try {
+      await _firestore.collection('users').doc(uid).delete();
+    } catch (_) {}
+
+    // 4. Firebase Auth 계정 자체를 삭제 (재인증이 필요하면 여기서 예외가 발생함)
+    await user.delete();
+
+    // 5. 구글 로그인 세션도 함께 정리
+    try {
+      await _googleSignIn.signOut();
+    } catch (_) {}
+  }
+
   String messageFor(FirebaseAuthException e) {
     switch (e.code) {
       case 'user-not-found':
@@ -211,6 +294,10 @@ class AuthService {
       case 'credential-already-in-use':
       case 'provider-already-linked':
         return '이미 다른 계정에 연결된 휴대폰 번호입니다.';
+      case 'reauth-cancelled':
+        return '재인증이 취소되었습니다.';
+      case 'reauth-password-required':
+        return '비밀번호를 입력해주세요.';
       default:
         return '오류가 발생했습니다: ${e.message}';
     }
