@@ -8,12 +8,16 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:hyper_local_project/screens/all_meetup_board.dart';
 import 'dart:convert'; 
 
 import '../models/gathering_model.dart';
 import '../services/chat_service.dart';
 import '../widgets/meetup_card.dart';
 import 'gathering_detail_screen.dart';
+
+// 💡 [추가] 앞서 만든 전체 모임 게시판 화면 import (경로는 본인 폴더 구조에 맞게 수정)
+import '../screens/all_meetup_board.dart'; 
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -999,6 +1003,23 @@ class MapScreenState extends State<MapScreen> {
                     ),
                   ),
                 ],
+              ),
+            ),
+
+            // 💡 [추가] 전체 모임 게시판으로 이동하는 '둘러보기' 버튼 (내 위치 버튼 위쪽에 배치)
+            Positioned(
+              bottom: 180, right: 20,
+              child: FloatingActionButton(
+                heroTag: "allBoardBtn", 
+                mini: true, 
+                backgroundColor: Colors.white,
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => AllMeetupBoardScreen()),
+                  );
+                },
+                child: const Icon(Icons.explore, color: Colors.green), // 탐색/둘러보기 아이콘
               ),
             ),
 
