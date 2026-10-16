@@ -8,15 +8,16 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:hyper_local_project/screens/all_meetup_board.dart';
 import 'dart:convert'; 
+
+import 'package:url_launcher/url_launcher.dart'; // 💡 외부 지도(카카오/네이버) 실행용
 
 import '../models/gathering_model.dart';
 import '../services/chat_service.dart';
 import '../widgets/meetup_card.dart';
 import 'gathering_detail_screen.dart';
 
-// 💡 [추가] 앞서 만든 전체 모임 게시판 화면 import (경로는 본인 폴더 구조에 맞게 수정)
+import 'package:geocoding/geocoding.dart'; 
 import '../screens/all_meetup_board.dart'; 
 
 class MapScreen extends StatefulWidget {
@@ -27,6 +28,9 @@ class MapScreen extends StatefulWidget {
 }
 
 class MapScreenState extends State<MapScreen> {
+  late Stream<QuerySnapshot> _meetingsStream;
+  late Stream<QuerySnapshot> _safeZonesStream;
+
   bool? _hasLocationPermission;
   
   GoogleMapController? mapController;
@@ -42,7 +46,9 @@ class MapScreenState extends State<MapScreen> {
   Timer? _debounce;
   BitmapDescriptor? _boltIcon;
 
-  // 💡 [추가] 카테고리별 커스텀 마커를 저장할 맵
+  // 🛡️ 안심지킴이집 방패 마커 아이콘 저장 변수
+  BitmapDescriptor? _safeZoneIcon;
+
   final Map<String, BitmapDescriptor> _categoryIcons = {};
   final Map<String, BitmapDescriptor> _urgentCategoryIcons = {};
 
@@ -60,15 +66,14 @@ class MapScreenState extends State<MapScreen> {
 
   LatLng _cameraCenter = const LatLng(37.9142, 127.1578); 
   
-  // 💡 [최종 수정] 직선거리 vs 실제 이동시간을 고려한 '진짜 30분 컷' 동네 번개 반경!
-  double _currentRadius = 1500.0; // 기본 도보 반경 1.5km로 축소
+  double _currentRadius = 1500.0; 
   String _selectedTransport = '도보'; 
 
   final List<Map<String, dynamic>> _transportOptions = [
-    {'label': '도보', 'icon': Icons.directions_walk, 'radius': 1500.0},     // 1.5km
-    {'label': '자전거', 'icon': Icons.directions_bike, 'radius': 3000.0},     // 3km
-    {'label': '대중교통', 'icon': Icons.directions_bus, 'radius': 5000.0},     // 5km
-    {'label': '자동차', 'icon': Icons.directions_car, 'radius': 8000.0},     // 8km
+    {'label': '도보', 'icon': Icons.directions_walk, 'radius': 1500.0},
+    {'label': '자전거', 'icon': Icons.directions_bike, 'radius': 3000.0},
+    {'label': '대중교통', 'icon': Icons.directions_bus, 'radius': 5000.0},
+    {'label': '자동차', 'icon': Icons.directions_car, 'radius': 8000.0},
   ];
 
   void openCreationSheet() {
@@ -79,8 +84,13 @@ class MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+
+    _meetingsStream = _firestore.collection('meetings').snapshots();
+    _safeZonesStream = _firestore.collection('safe_zones').snapshots();
+
     _loadBoltIcon();
-    _loadAllCustomMarkers(); // 💡 [추가] 앱 시작 시 커스텀 마커 미리 그리기
+    _loadAllCustomMarkers();
+    _loadSafeZoneIcon(); 
     _checkPermissionAndFetchLocation(); 
   }
 
@@ -94,12 +104,43 @@ class MapScreenState extends State<MapScreen> {
     super.dispose();
   }
 
- // 💡 [사이즈 최적화] 지도와 어울리도록 전체 크기를 아담하고 세련되게 축소했습니다!
+  // 🛡️ 안심지킴이집 전용 커스텀 마커(방패 모양) 생성 함수 (크기 축소 버전)
+  Future<void> _loadSafeZoneIcon() async {
+    final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(pictureRecorder);
+    const double size = 50;
+
+    final Offset center = const Offset(size / 2, size / 2);
+    
+    final bgPaint = Paint()..color = Colors.blueAccent;
+    canvas.drawCircle(center, size / 2.5, bgPaint);
+
+    final borderPaint = Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.5;
+    canvas.drawCircle(center, size / 2.5, borderPaint);
+
+    const IconData safeIcon = Icons.security;
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+    textPainter.text = TextSpan(
+      text: String.fromCharCode(safeIcon.codePoint),
+      style: TextStyle(fontSize: 22, fontFamily: safeIcon.fontFamily, package: safeIcon.fontPackage, color: Colors.white),
+    );
+    textPainter.layout();
+    textPainter.paint(canvas, Offset((size - textPainter.width) / 2, (size - textPainter.height) / 2));
+
+    final img = await pictureRecorder.endRecording().toImage(size.toInt(), size.toInt());
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    
+    if (mounted) {
+      setState(() {
+        _safeZoneIcon = BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+      });
+    }
+  }
+
   Future<BitmapDescriptor> _createCategoryMarker(String category, bool isUrgent) async {
     final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
     final Canvas canvas = Canvas(pictureRecorder);
     
-    // 💡 160 -> 110으로 전체 도화지 사이즈 축소
     const double size = 110; 
 
     IconData categoryIcon = Icons.bolt;
@@ -118,23 +159,18 @@ class MapScreenState extends State<MapScreen> {
       baseColor = Colors.redAccent; 
     }
 
-    // 💡 원의 반지름과 중심점 위치 조정 (기존 10.0 두께에서 6.0으로 얇게)
     final double circleRadius = size / 3.5; 
     final Offset circleCenter = const Offset(size / 2, size / 2 + 10);
 
-    // 1. 그림자
     final shadowPaint = Paint()..color = Colors.black26..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
     canvas.drawCircle(circleCenter, circleRadius, shadowPaint);
 
-    // 2. 흰색 배경
     final bgPaint = Paint()..color = Colors.white;
     canvas.drawCircle(circleCenter, circleRadius, bgPaint);
 
-    // 3. 테두리 (strokeWidth 축소)
     final borderPaint = Paint()..color = baseColor..style = PaintingStyle.stroke..strokeWidth = 6.0;
     canvas.drawCircle(circleCenter, circleRadius, borderPaint);
 
-    // 4. 아이콘 (fontSize 45 -> 28로 축소)
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
     textPainter.text = TextSpan(
       text: String.fromCharCode(categoryIcon.codePoint),
@@ -148,17 +184,15 @@ class MapScreenState extends State<MapScreen> {
     textPainter.layout();
     textPainter.paint(canvas, Offset((size - textPainter.width) / 2, (size / 2 + 10) - textPainter.height / 2));
 
-    // 5. 마감 임박 뱃지도 아담하게 축소
     if (isUrgent) {
       final badgePaint = Paint()..color = Colors.redAccent;
-      // 뱃지 넓이 100 -> 70, 높이 42 -> 26 축소
       final Rect badgeRect = Rect.fromCenter(center: const Offset(size / 2, 18), width: 70, height: 26);
       canvas.drawRRect(RRect.fromRectAndRadius(badgeRect, const Radius.circular(12)), badgePaint);
 
       final badgeText = TextPainter(textDirection: TextDirection.ltr);
       badgeText.text = const TextSpan(
         text: '마감 임박!', 
-        style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold) // 폰트 사이즈 18 -> 11 축소
+        style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold)
       );
       badgeText.layout();
       badgeText.paint(canvas, Offset((size - badgeText.width) / 2, 18 - badgeText.height / 2));
@@ -169,7 +203,6 @@ class MapScreenState extends State<MapScreen> {
     return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
   }
 
-  // 💡 [추가] 모든 카테고리별 커스텀 마커 로드
   Future<void> _loadAllCustomMarkers() async {
     for (var cat in _categories) {
       _categoryIcons[cat] = await _createCategoryMarker(cat, false);
@@ -242,6 +275,75 @@ class MapScreenState extends State<MapScreen> {
         });
       }
     });
+  }
+
+  // 🚨 [핵심 기능] 내 현재 위치에서 가장 가까운 대피소를 찾아 즉시 길안내 실행
+  Future<void> _findNearestSafeZoneAndLaunch() async {
+    if (_currentP == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('현재 위치를 찾을 수 없습니다.')));
+      return;
+    }
+
+    // 로딩 다이얼로그
+    showDialog(
+      context: context, barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.red)),
+    );
+
+    try {
+      QuerySnapshot safeZoneSnapshot = await _firestore.collection('safe_zones').get();
+      
+      double minDistance = double.infinity;
+      Map<String, dynamic>? closestZone;
+
+      // 전체 안심지킴이집 중 현재 내 위치(GPS)와 가장 가까운 곳 1개 찾기
+      for (var doc in safeZoneSnapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        double lat = data['lat'] ?? 0.0;
+        double lng = data['lng'] ?? 0.0;
+        
+        double distance = Geolocator.distanceBetween(_currentP!.latitude, _currentP!.longitude, lat, lng);
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestZone = data;
+        }
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context); // 로딩 닫기
+
+      if (closestZone != null) {
+        double destLat = closestZone['lat'];
+        double destLng = closestZone['lng'];
+        String destName = closestZone['name'] ?? '안심지킴이집';
+
+        // 💡 [디버깅용 꿀팁] 가장 가까운 안심지킴이집 정보를 터미널에 출력합니다!
+        print("🚨 [디버그] 가장 가까운 대피소 탐색 완료! 이름: $destName, 거리: ${minDistance.toStringAsFixed(1)}m, 좌표: $destLat,$destLng");
+
+        // 3가지 지도 앱 외부 실행 URL Scheme 구성
+        final Uri kakaoMapUrl = Uri.parse('kakaomap://route?ep=$destLat,$destLng&by=WALK');
+        final Uri naverMapUrl = Uri.parse('nmap://route/walk?dlat=$destLat&dlng=$destLng&dname=$destName');
+        final Uri googleMapUrl = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$destLat,$destLng&travelmode=walking');
+
+        try {
+          // 카카오맵 시도 -> 네이버지도 시도 -> 구글맵 시도
+          if (await canLaunchUrl(kakaoMapUrl)) {
+            await launchUrl(kakaoMapUrl, mode: LaunchMode.externalApplication);
+          } else if (await canLaunchUrl(naverMapUrl)) {
+            await launchUrl(naverMapUrl, mode: LaunchMode.externalApplication);
+          } else {
+            await launchUrl(googleMapUrl, mode: LaunchMode.externalApplication);
+          }
+        } catch (e) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('지도 앱을 켤 수 없습니다.')));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('대피소 정보를 불러올 수 없습니다.')));
+      }
+    }
   }
 
   Future<void> _polishTextWithAI(Function setSheetState) async {
@@ -471,7 +573,12 @@ class MapScreenState extends State<MapScreen> {
                                 onTap: () {
                                   Navigator.push(
                                     context,
-                                    MaterialPageRoute(builder: (context) => GatheringDetailScreen(gathering: gathering)),
+                                    MaterialPageRoute(
+                                      builder: (context) => GatheringDetailScreen(
+                                        gathering: gathering,
+                                        meetupData: data, 
+                                      ),
+                                    ),
                                   );
                                 },
                                 child: MeetupCard(meetupData: data),
@@ -625,6 +732,33 @@ class MapScreenState extends State<MapScreen> {
     ).then((_) => setState(() => _isSheetOpen = false));
   }
 
+  // 🛡️ 인근 안심지킴이집(100m 이내) 확인 함수
+  Future<Map<String, dynamic>> _checkNearestSafeZone(double meetupLat, double meetupLng) async {
+    try {
+      QuerySnapshot safeZoneSnapshot = await FirebaseFirestore.instance.collection('safe_zones').get();
+      
+      for (var doc in safeZoneSnapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        double zoneLat = data['lat'] ?? 0.0;
+        double zoneLng = data['lng'] ?? 0.0;
+        String storeName = data['name'] ?? '안심지킴이집';
+
+        double distanceInMeters = Geolocator.distanceBetween(meetupLat, meetupLng, zoneLat, zoneLng);
+
+        if (distanceInMeters <= 100.0) {
+          return {
+            'isSafe': true,
+            'storeName': storeName,
+            'distance': distanceInMeters.toInt(),
+          };
+        }
+      }
+    } catch (e) {
+      print("안심지킴이집 확인 중 에러: $e");
+    }
+    return {'isSafe': false, 'storeName': '', 'distance': 0};
+  }
+
   void _showInputSheet(LatLng pos) async {
     if (_isSheetOpen) return;
     setState(() => _isSheetOpen = true);
@@ -707,20 +841,84 @@ class MapScreenState extends State<MapScreen> {
                   child: ElevatedButton(
                     onPressed: () async {
                       if (_titleController.text.isNotEmpty && _selectedTime != null) {
-                        final now = DateTime.now();
-                        final d = DateTime(now.year, now.month, now.day, _selectedTime!.hour, _selectedTime!.minute);
-                        final expireTime = d.add(const Duration(days: 3));
-                        final user = FirebaseAuth.instance.currentUser;
-                        final meetingData = {
-                          'title': _titleController.text, 'category': _selectedCategory, 'description': _noteController.text,
-                          'time': _selectedTime!.format(context), 'lat': pos.latitude, 'lng': pos.longitude,
-                          'currentParticipants': 1, 'maxParticipants': _maxParticipants, 'deadline': Timestamp.fromDate(d),
-                          'expireAt': Timestamp.fromDate(expireTime), 'creatorId': user?.uid ?? '', 'participants': user != null ? [user.uid] : [],
-                        };
-                        final meetingRef = await _firestore.collection('meetings').add(meetingData);
-                        await ChatService().createRoomForMeeting(meetingId: meetingRef.id, meetingData: meetingData);
-                        _titleController.clear(); _noteController.clear();
-                        if (mounted) Navigator.pop(context);
+                        
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (context) => const Center(child: CircularProgressIndicator()),
+                          );
+
+                          try {
+                          String savedRegion = '전체';
+                          String savedDong = '동네 미상';
+
+                          // 💡 주소 변환(Geocoding) 실패 시 앱이 터지지 않도록 예외 처리
+                          try {
+                            List<Placemark> placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
+                            if (placemarks.isNotEmpty) {
+                              Placemark place = placemarks[0];
+                              String adminArea = place.administrativeArea ?? '';
+                              
+                              if (adminArea.contains('서울')) savedRegion = '서울';
+                              else if (adminArea.contains('경기')) savedRegion = '경기';
+                              else if (adminArea.contains('인천')) savedRegion = '인천';
+                              else if (adminArea.contains('강원')) savedRegion = '강원';
+                              else if (adminArea.contains('충청') || adminArea.contains('충북') || adminArea.contains('충남')) savedRegion = '충청';
+                              else if (adminArea.contains('전라') || adminArea.contains('전북') || adminArea.contains('전남')) savedRegion = '전라';
+                              else if (adminArea.contains('경상') || adminArea.contains('경북') || adminArea.contains('경남')) savedRegion = '경상';
+                              else if (adminArea.contains('제주')) savedRegion = '제주';
+                              else savedRegion = adminArea;
+
+                              savedDong = place.subLocality ?? place.thoroughfare ?? '동네 미상';
+                              if (savedDong.isEmpty) savedDong = '동네 미상';
+                            }
+                          } catch (geoError) {
+                            print("주소 변환 실패(기본값 사용): $geoError");
+                          }
+
+                          // 🛡️ 안심지킴이집 거리 검사 수행
+                          Map<String, dynamic> safeCheck = await _checkNearestSafeZone(pos.latitude, pos.longitude);
+
+                          final now = DateTime.now();
+                          final d = DateTime(now.year, now.month, now.day, _selectedTime!.hour, _selectedTime!.minute);
+                          final expireTime = d.add(const Duration(days: 3));
+                          final user = FirebaseAuth.instance.currentUser;
+                          
+                          final meetingData = {
+                            'title': _titleController.text, 
+                            'category': _selectedCategory, 
+                            'description': _noteController.text,
+                            'time': _selectedTime!.format(context), 
+                            'lat': pos.latitude, 
+                            'lng': pos.longitude,
+                            'region': savedRegion, 
+                            'dong': savedDong,     
+                            'isSafeZone': safeCheck['isSafe'],             // 🛡️ 안심 구역 여부
+                            'safeZoneName': safeCheck['storeName'],        // 편의점 이름
+                            'safeZoneDistance': safeCheck['distance'],     // 거리 (미터)
+                            'currentParticipants': 1, 
+                            'maxParticipants': _maxParticipants, 
+                            'deadline': Timestamp.fromDate(d),
+                            'expireAt': Timestamp.fromDate(expireTime), 
+                            'creatorId': user?.uid ?? '', 
+                            'participants': user != null ? [user.uid] : [],
+                            'createdAt': FieldValue.serverTimestamp(),
+                          };
+                          
+                          final meetingRef = await _firestore.collection('meetings').add(meetingData);
+                          await ChatService().createRoomForMeeting(meetingId: meetingRef.id, meetingData: meetingData);
+                          
+                          _titleController.clear(); 
+                          _noteController.clear();
+                          
+                          if (mounted) {
+                            Navigator.pop(context); // 로딩 닫기
+                            Navigator.pop(context); // 시트 닫기
+                          }
+                        } catch (e) {
+                          Navigator.pop(context); 
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('번개 생성 실패: $e')));
+                        }
                       }
                     },
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
@@ -737,7 +935,6 @@ class MapScreenState extends State<MapScreen> {
     setState(() { _isSheetOpen = false; _tempMarker = null; });
   }
 
-  // 💡 [UI 추가] 지도 상단에 띄울 '이동 수단 필터 위젯'
   Widget _buildTransportFilter() {
     return SizedBox(
       height: 42,
@@ -768,7 +965,7 @@ class MapScreenState extends State<MapScreen> {
               selectedColor: Colors.green,
               backgroundColor: Colors.white.withOpacity(0.95),
               elevation: isSelected ? 4 : 1,
-              showCheckmark: false, // 기본 체크마크 숨김
+              showCheckmark: false, 
               onSelected: (bool selected) {
                 if (selected) {
                   setState(() {
@@ -829,10 +1026,19 @@ class MapScreenState extends State<MapScreen> {
       );
     }
 
-    return StreamBuilder<QuerySnapshot>(
-      stream: _firestore.collection('meetings').snapshots(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+    // 🛡️ MultiStreamBuilder를 통해 모임 데이터와 안심지킴이집 데이터를 모두 불러옵니다.
+    return MultiStreamBuilder(
+      streams: [
+        _meetingsStream, 
+        _safeZonesStream, 
+      ],
+      builder: (context, snapshots) {
+        if (!snapshots[0].hasData || !snapshots[1].hasData) {
+          return const Center(child: CircularProgressIndicator(color: Colors.green));
+        }
+
+        final meetingDocs = snapshots[0].data!.docs;
+        final safeZoneDocs = snapshots[1].data!.docs;
 
         final now = DateTime.now();
         final markers = <Marker>{};
@@ -848,8 +1054,34 @@ class MapScreenState extends State<MapScreen> {
           );
         }
 
-        for (var doc in snapshot.data!.docs) {
+        // 🛡️ 안심지킴이집(방패 마커) 상시 노출
+        for (var doc in safeZoneDocs) {
           final data = doc.data() as Map<String, dynamic>;
+          double lat = data['lat'] ?? 0.0;
+          double lng = data['lng'] ?? 0.0;
+          if (lat == 0.0 && lng == 0.0) continue;
+
+          // 렌더링 최적화를 위해 현재 반경 + 1km 내에 있는 방패 마커만 띄웁니다.
+          double distance = Geolocator.distanceBetween(_cameraCenter.latitude, _cameraCenter.longitude, lat, lng);
+          if (distance <= _currentRadius + 1000) { 
+            markers.add(
+              Marker(
+                markerId: MarkerId('safe_${doc.id}'),
+                position: LatLng(lat, lng),
+                icon: _safeZoneIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+                zIndex: 1, // 번개 모임보다 밑에 깔리게 Z축 설정
+                infoWindow: InfoWindow(
+                  title: '🛡️ ${data['name']}', 
+                  snippet: data['address']
+                ),
+              ),
+            );
+          }
+        }
+
+        // ⚡ 기존 모임(번개) 마커 추가 로직
+        for (var doc in meetingDocs) {
+          final data = doc.data() as Map<String, dynamic>? ?? {}; 
           final category = data['category'] ?? '기타';
           bool isUrgent = false; 
           
@@ -857,7 +1089,6 @@ class MapScreenState extends State<MapScreen> {
             DateTime deadline = (data['deadline'] as Timestamp).toDate();
             if (now.isAfter(deadline)) continue;
 
-            // 💡 [수정됨] 마감 10분 전일 때만 빨간색 뱃지 띄우기 로직 추가
             final diff = deadline.difference(now);
             if (diff.inMinutes <= 10 && diff.inMinutes > 0) {
               isUrgent = true;
@@ -871,24 +1102,28 @@ class MapScreenState extends State<MapScreen> {
             if (!title.contains(query) && !description.contains(query)) continue; 
           }
 
+          double lat = data['lat'] ?? 0.0;
+          double lng = data['lng'] ?? 0.0;
+          if (lat == 0.0 && lng == 0.0) continue; 
+
           double distanceInMeters = Geolocator.distanceBetween(
             _cameraCenter.latitude, _cameraCenter.longitude,
-            data['lat'], data['lng']
+            lat, lng
           );
 
           if (distanceInMeters > _currentRadius) {
             continue; 
           }
 
-          // 💡 [추가] 생성된 카테고리별 마커 적용 (없으면 기존 번개 마커 사용)
           BitmapDescriptor markerIcon = isUrgent 
               ? (_urgentCategoryIcons[category] ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed))
               : (_categoryIcons[category] ?? _boltIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen));
 
           markers.add(
             Marker(
-              markerId: MarkerId(doc.id), position: LatLng(data['lat'], data['lng']),
+              markerId: MarkerId(doc.id), position: LatLng(lat, lng),
               icon: markerIcon, 
+              zIndex: 10,
               onTap: () => _onMarkerTapped(doc.id, data),
             ),
           );
@@ -984,11 +1219,8 @@ class MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  
                   _buildTransportFilter(),
-                  
                   const SizedBox(height: 12),
-                  
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
@@ -1006,25 +1238,25 @@ class MapScreenState extends State<MapScreen> {
               ),
             ),
 
-            // 💡 [추가] 전체 모임 게시판으로 이동하는 '둘러보기' 버튼 (내 위치 버튼 위쪽에 배치)
             Positioned(
               bottom: 180, right: 20,
-              child: FloatingActionButton(
+              child: FloatingActionButton.extended(
                 heroTag: "allBoardBtn", 
-                mini: true, 
                 backgroundColor: Colors.white,
+                elevation: 4,
                 onPressed: () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(builder: (context) => AllMeetupBoardScreen()),
                   );
                 },
-                child: const Icon(Icons.explore, color: Colors.green), // 탐색/둘러보기 아이콘
+                icon: const Icon(Icons.explore, color: Colors.green),
+                label: const Text("전국 번개 구경", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
               ),
             ),
 
             Positioned(
-              bottom: 120, right: 20,
+              bottom: 110, right: 20,
               child: FloatingActionButton(
                 heroTag: "myLocationBtn", mini: true, backgroundColor: Colors.white,
                 onPressed: () {
@@ -1036,10 +1268,24 @@ class MapScreenState extends State<MapScreen> {
               ),
             ),
 
+            // 🚨 [추가] 지도 홈 화면의 '긴급 대피' SOS 버튼 (좌측 하단)
             Positioned(
-              bottom: 40,
-              left: 0,
-              right: 0,
+              bottom: 110, left: 20,
+              child: FloatingActionButton.extended(
+                heroTag: "emergencySosBtn",
+                backgroundColor: Colors.red[700], // 긴급 상황을 알리는 짙은 빨간색
+                elevation: 6,
+                icon: const Icon(Icons.directions_run, color: Colors.white),
+                label: const Text("긴급 대피", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                onPressed: () {
+                  // 버튼 누르면 '정말 대피하시겠습니까?' 묻지 않고 1초라도 아끼기 위해 즉시 길안내 실행!
+                  _findNearestSafeZoneAndLaunch();
+                },
+              ),
+            ),
+
+            Positioned(
+              bottom: 40, left: 0, right: 0,
               child: Center(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(30),
@@ -1047,14 +1293,14 @@ class MapScreenState extends State<MapScreen> {
                     filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.65), 
+                        color: Colors.black.withOpacity(0.75), 
                         borderRadius: BorderRadius.circular(30),
                       ),
                       child: ElevatedButton.icon(
                         onPressed: () => _showListBottomSheet(filteredDocs),
-                        icon: const Icon(Icons.list, color: Colors.white, size: 20),
+                        icon: const Icon(Icons.location_on, color: Colors.white, size: 20),
                         label: Text(
-                          '목록 보기 (${filteredDocs.length})', 
+                          '📍 내 주변 번개 (${filteredDocs.length})', 
                           style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15)
                         ),
                         style: ElevatedButton.styleFrom(
@@ -1069,6 +1315,42 @@ class MapScreenState extends State<MapScreen> {
               ),
             ),
           ],
+        );
+      },
+    );
+  }
+}
+
+// 🛡️ 여러 개의 Firestore Stream을 동시에 관리해주는 유틸리티 위젯
+class MultiStreamBuilder extends StatelessWidget {
+  final List<Stream<QuerySnapshot>> streams;
+  final Widget Function(BuildContext, List<AsyncSnapshot<QuerySnapshot>>) builder;
+
+  const MultiStreamBuilder({
+    Key? key,
+    required this.streams,
+    required this.builder,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return _buildMultiStream(context, streams, []);
+  }
+
+  Widget _buildMultiStream(
+      BuildContext context,
+      List<Stream<QuerySnapshot>> remainingStreams,
+      List<AsyncSnapshot<QuerySnapshot>> resolvedSnapshots) {
+    if (remainingStreams.isEmpty) {
+      return builder(context, resolvedSnapshots);
+    }
+    return StreamBuilder<QuerySnapshot>(
+      stream: remainingStreams.first,
+      builder: (context, snapshot) {
+        return _buildMultiStream(
+          context,
+          remainingStreams.sublist(1),
+          [...resolvedSnapshots, snapshot],
         );
       },
     );

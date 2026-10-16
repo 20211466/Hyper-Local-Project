@@ -1,20 +1,83 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_generative_ai/google_generative_ai.dart'; 
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:url_launcher/url_launcher.dart'; // 💡 외부 지도 앱 실행을 위해 추가
 import 'dart:convert'; 
 import '../models/gathering_model.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class GatheringDetailScreen extends StatelessWidget {
   final Gathering gathering;
+  final Map<String, dynamic>? meetupData; 
 
-  const GatheringDetailScreen({super.key, required this.gathering});
+  const GatheringDetailScreen({
+    super.key, 
+    required this.gathering,
+    this.meetupData, 
+  });
+
+  // 🚨 [핵심] 외부 지도(카카오맵/네이버지도/구글맵)로 도보 네비게이션 즉시 실행하는 함수
+  Future<void> _launchEmergencyNavigation(BuildContext context, double destLat, double destLng, String destName) async {
+    // 1. 카카오맵 도보 길찾기 URL Scheme (ep: 도착지 좌표, by: 도보(WALK))
+    final Uri kakaoMapUrl = Uri.parse('kakaomap://route?ep=$destLat,$destLng&by=WALK');
+    // 2. 네이버지도 도보 길찾기 URL Scheme
+    final Uri naverMapUrl = Uri.parse('nmap://route/walk?dlat=$destLat&dlng=$destLng&dname=$destName');
+    // 3. 구글맵 도보 길찾기 (웹/앱 범용)
+    final Uri googleMapUrl = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$destLat,$destLng&travelmode=walking');
+
+    try {
+      // 카카오맵 먼저 시도
+      if (await canLaunchUrl(kakaoMapUrl)) {
+        await launchUrl(kakaoMapUrl, mode: LaunchMode.externalApplication);
+      } 
+      // 실패 시 네이버지도 시도
+      else if (await canLaunchUrl(naverMapUrl)) {
+        await launchUrl(naverMapUrl, mode: LaunchMode.externalApplication);
+      } 
+      // 둘 다 없으면 구글맵(또는 웹브라우저) 시도
+      else {
+        await launchUrl(googleMapUrl, mode: LaunchMode.externalApplication);
+      }
+
+      // 💡 [2단계 적용] 지도 앱으로 넘어간 직후, 폰 상단에 푸시 알림처럼 행동 지침 띄워주기 (SnackBar 활용)
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("🚨 대피 지침 (도착 시)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white)),
+                const SizedBox(height: 4),
+                Text("편의점 안으로 들어가 점원에게 '위험해요, 112 비상벨 눌러주세요!'라고 외치세요.", style: TextStyle(color: Colors.red[100], fontSize: 14)),
+              ],
+            ),
+            backgroundColor: Colors.red[900],
+            duration: const Duration(seconds: 10), // 길게 띄워둠
+            behavior: SnackBarBehavior.floating,
+            margin: EdgeInsets.only(bottom: MediaQuery.of(context).size.height - 150, left: 20, right: 20), // 화면 상단에 띄우기
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('지도 앱을 실행할 수 없습니다.')));
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    // 💡 현재 로그인한 유저 정보 가져오기
     final currentUserUid = FirebaseAuth.instance.currentUser?.uid;
+
+    bool isSafeZone = meetupData?['isSafeZone'] ?? false;
+    String safeZoneName = meetupData?['safeZoneName'] ?? '안심지킴이집';
+    int safeZoneDistance = meetupData?['safeZoneDistance'] ?? 0;
+    
+    // 안심지킴이집의 실제 좌표 (없으면 모임 좌표 사용)
+    double destLat = meetupData?['lat'] ?? 0.0;
+    double destLng = meetupData?['lng'] ?? 0.0;
 
     return Scaffold(
       appBar: AppBar(
@@ -28,12 +91,73 @@ class GatheringDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. 모임 기본 정보
             Text(
               gathering.title,
               style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
+            
+            // 🛡️ 안심 구역 대피소 정보 카드 & 🚨 SOS 버튼
+            if (isSafeZone) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blueAccent.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.security, color: Colors.blueAccent, size: 28),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Text(
+                                '🛡️ 인근 안심 대피소 인증 구역',
+                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent, fontSize: 13),
+                              ),
+                              const SizedBox(width: 4),
+                              // 💡 [3단계 적용] 툴팁 추가
+                              Tooltip(
+                                message: '여성안심지킴이집이란? 24시간 불이 켜져 있고, 112 경찰 상황실과 즉시 연결되는 카운터 비상벨이 설치된 편의점입니다.',
+                                triggerMode: TooltipTriggerMode.tap,
+                                showDuration: const Duration(seconds: 4),
+                                decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(8)),
+                                child: const Icon(Icons.help_outline, size: 16, color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '반경 ${safeZoneDistance}m 내에 대피소($safeZoneName) 위치',
+                            style: const TextStyle(color: Colors.black87, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // 🚨 [1단계 적용] 화면을 가리지 않는 컴팩트한 SOS 대피 버튼
+                    ElevatedButton.icon(
+                      onPressed: () => _launchEmergencyNavigation(context, destLat, destLng, safeZoneName),
+                      icon: const Icon(Icons.run_circle, color: Colors.white, size: 18),
+                      label: const Text("대피", style: TextStyle(fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
             Row(
               children: [
                 const Icon(Icons.access_time, size: 20, color: Colors.orange),
@@ -44,11 +168,11 @@ class GatheringDetailScreen extends StatelessWidget {
                 ),
               ],
             ),
+            
             const SizedBox(height: 20),
             const Divider(thickness: 1.5),
             const SizedBox(height: 10),
 
-            // 2. 모임 상세 설명
             const Text(
               "모임 설명",
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -67,7 +191,6 @@ class GatheringDetailScreen extends StatelessWidget {
               ),
             ),
             
-            // 💡 [2단계 적용] 모임 설명 바로 아래에 AI 스마트 매칭 카드 쏙 끼워넣기!
             AiMatchingCard(
               meetingTitle: gathering.title, 
               meetingDescription: gathering.description,
@@ -75,7 +198,6 @@ class GatheringDetailScreen extends StatelessWidget {
             
             const SizedBox(height: 24),
 
-            // 3. 참여자 목록 및 뱃지 영역
             const Text(
               "참여자 프로필",
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -97,12 +219,10 @@ class GatheringDetailScreen extends StatelessWidget {
                   final data = doc.data() as Map<String, dynamic>;
                   final List participants = data['participants'] ?? [];
 
-                  // 내 참여 여부 확인 ('익명 참여자' 대신 실제 UID 사용)
                   final bool isJoined = currentUserUid != null && participants.contains(currentUserUid);
 
                   return Column(
                     children: [
-                      // 참여자 목록 리스트 렌더링
                       Expanded(
                         child: participants.isEmpty
                             ? const Center(child: Text('아직 참여자가 없습니다.', style: TextStyle(color: Colors.grey)))
@@ -112,7 +232,6 @@ class GatheringDetailScreen extends StatelessWidget {
                                 itemBuilder: (context, index) {
                                   final uid = participants[index];
                                   
-                                  // 유저 UID를 기반으로 users 컬렉션에서 프로필 정보를 가져옴
                                   return FutureBuilder<DocumentSnapshot>(
                                     future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
                                     builder: (context, userSnapshot) {
@@ -128,8 +247,6 @@ class GatheringDetailScreen extends StatelessWidget {
                                       final gender = userData['gender'] ?? '비공개';
                                       final mbti = userData['mbti'] ?? '비공개';
                                       final mannerVolt = userData['mannerVolt'] ?? 0;
-                                      
-                                      // 💡 [핵심 방어 로직] 모임 참석 횟수가 3회 이하면 뉴비로 간주! (필드가 없으면 기본값 0)
                                       final meetingCount = userData['meetingCount'] ?? 0;
 
                                       return ListTile(
@@ -138,7 +255,6 @@ class GatheringDetailScreen extends StatelessWidget {
                                           backgroundColor: Colors.green[50],
                                           child: const Icon(Icons.person, color: Colors.green),
                                         ),
-                                        // 💡 이름 옆에 조건부로 뉴비 뱃지 달아주기
                                         title: Row(
                                           children: [
                                             Text(nickname, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -155,7 +271,6 @@ class GatheringDetailScreen extends StatelessWidget {
                                             ],
                                           ],
                                         ),
-                                        // 💡 프로필 뱃지 출력 (나이대, 성별, MBTI, 매너볼트)
                                         subtitle: Wrap(
                                           spacing: 6,
                                           runSpacing: 4,
@@ -175,7 +290,6 @@ class GatheringDetailScreen extends StatelessWidget {
                       
                       const SizedBox(height: 16),
 
-                      // 참여 인원수 요약
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -189,25 +303,21 @@ class GatheringDetailScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
 
-                      // 4. 참여/취소 버튼 (실제 UID 사용)
                       ElevatedButton(
                         onPressed: currentUserUid == null ? null : () async {
                           try {
                             if (isJoined) {
-                              // 참여 취소 로직
                               await doc.reference.update({
                                 'participants': FieldValue.arrayRemove([currentUserUid]),
                                 'currentParticipants': FieldValue.increment(-1),
                               });
                               if (context.mounted) _showSnackBar(context, "참여를 취소했습니다.", Colors.grey);
                             } else {
-                              // 참여 로직
                               await doc.reference.update({
                                 'participants': FieldValue.arrayUnion([currentUserUid]),
                                 'currentParticipants': FieldValue.increment(1),
                               });
                               
-                              // 💡 [핵심 연동] 참여할 때 해당 유저의 meetingCount(참여 횟수)도 1 증가시켜줍니다!
                               await FirebaseFirestore.instance.collection('users').doc(currentUserUid).set({
                                 'meetingCount': FieldValue.increment(1)
                               }, SetOptions(merge: true));
@@ -240,9 +350,8 @@ class GatheringDetailScreen extends StatelessWidget {
     );
   }
 
-  // 💡 프로필 뱃지를 예쁘게 만들어주는 내부 위젯 함수
   Widget _buildBadge(String text, MaterialColor color) {
-    if (text == '비공개') return const SizedBox.shrink(); // 비공개면 뱃지 숨김
+    if (text == '비공개') return const SizedBox.shrink(); 
     return Container(
       margin: const EdgeInsets.only(top: 4),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -258,7 +367,6 @@ class GatheringDetailScreen extends StatelessWidget {
     );
   }
 
-  // 스낵바 표시 함수
   void _showSnackBar(BuildContext context, String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -272,7 +380,6 @@ class GatheringDetailScreen extends StatelessWidget {
   }
 }
 
-// 💡 AI 매칭 점수를 분석하고 예쁘게 보여주는 커스텀 위젯
 class AiMatchingCard extends StatefulWidget {
   final String meetingTitle;
   final String meetingDescription;
@@ -297,7 +404,6 @@ class _AiMatchingCardState extends State<AiMatchingCard> {
 
   Future<void> _analyzeMatch() async {
     try {
-      // 1. 내 MBTI 가져오기 (테스트를 위해 기본값 세팅)
       final user = FirebaseAuth.instance.currentUser;
       String myMbti = 'ENFP'; 
       if (user != null) {
@@ -305,13 +411,11 @@ class _AiMatchingCardState extends State<AiMatchingCard> {
         myMbti = (doc.data() as Map<String, dynamic>?)?['mbti'] ?? 'ENFP';
       }
 
-      // 2. 제미나이 3.6 모델 세팅
       final model = GenerativeModel(
         model: 'gemini-3.6-flash',
         apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
       );
 
-      // 3. AI에게 매칭 점수와 이유를 JSON으로 요구
       final prompt = """
       너는 커뮤니티 앱의 천재 매칭 매니저야.
       내 MBTI는 [$myMbti]야. 
@@ -326,7 +430,6 @@ class _AiMatchingCardState extends State<AiMatchingCard> {
       final response = await model.generateContent([Content.text(prompt)]);
       String cleanJson = response.text?.trim() ?? '';
       
-      // JSON 찌꺼기 제거
       if (cleanJson.startsWith('```json')) cleanJson = cleanJson.replaceFirst('```json', '');
       if (cleanJson.startsWith('```')) cleanJson = cleanJson.replaceFirst('```', '');
       if (cleanJson.endsWith('```')) cleanJson = cleanJson.substring(0, cleanJson.length - 3);

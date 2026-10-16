@@ -9,119 +9,246 @@ class AllMeetupBoardScreen extends StatefulWidget {
 
 class _AllMeetupBoardScreenState extends State<AllMeetupBoardScreen> {
   final double MAX_DISTANCE_METERS = 8000.0; // 최대 허용 반경 (8km)
+  
+  String _selectedRegion = '전체'; 
+  final List<String> _regions = ['전체', '서울', '경기', '인천', '강원', '충청', '전라', '경상', '제주'];
 
-  // 사용자의 현재 위치를 가져와서 모임 장소와 거리를 계산하는 함수
+  String _searchDong = ''; 
+  final TextEditingController _dongSearchController = TextEditingController();
+
   Future<void> _checkDistanceAndJoin(BuildContext context, DocumentSnapshot meetupDoc) async {
     try {
-      // 로딩 창 띄우기 (위치 계산하는 동안 대기)
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => Center(child: CircularProgressIndicator()),
+        builder: (context) => const Center(child: CircularProgressIndicator()),
       );
 
-      // 1. 사용자 현재 위치 가져오기
       Position userPosition = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      // 2. 모임의 위치 정보 가져오기 (Firestore의 GeoPoint 기준)
-      GeoPoint meetupLocation = meetupDoc['location'];
+      // 💡 [수정됨] location 필드가 없는 옛날 데이터에서도 에러가 안나게 처리
+      final data = meetupDoc.data() as Map<String, dynamic>? ?? {};
+      double lat = data['lat'] ?? 0.0;
+      double lng = data['lng'] ?? 0.0;
 
-      // 3. 거리 계산 (단위: 미터)
       double distanceInMeters = Geolocator.distanceBetween(
         userPosition.latitude,
         userPosition.longitude,
-        meetupLocation.latitude,
-        meetupLocation.longitude,
+        lat,
+        lng,
       );
 
-      Navigator.pop(context); // 로딩 창 닫기
+      Navigator.pop(context); 
 
-      // 4. 지오펜싱(Geofencing) 로직: 8km 이내인지 확인
       if (distanceInMeters <= MAX_DISTANCE_METERS) {
-        // 8km 이내면 참가 성공 -> 채팅방이나 상세 페이지로 이동
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('참가 성공! ${(distanceInMeters / 1000).toStringAsFixed(1)}km 거리에 있습니다.')),
         );
-        // TODO: Navigator.push(context, MaterialPageRoute(builder: (context) => ChatRoomScreen(...)));
+        // TODO: 채팅방 이동 로직 연동
       } else {
-        // 8km 초과면 참가 거부 알림
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
-            title: Text('📍 참여 불가'),
-            content: Text('현재 위치에서 모임 장소까지의 거리가 ${(distanceInMeters / 1000).toStringAsFixed(1)}km 입니다.\n동네 번개 모임은 8km 이내에서만 참여할 수 있습니다.'),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text('📍 참여 불가', style: TextStyle(fontWeight: FontWeight.bold)),
+            content: Text('현재 위치에서 모임 장소까지 ${(distanceInMeters / 1000).toStringAsFixed(1)}km 떨어져 있습니다.\n\n동네 번개는 8km 이내에서만 참여 가능해요! 눈으로만 구경해 주세요 👀'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
-                child: Text('확인'),
+                child: const Text('확인'),
               ),
             ],
           ),
         );
       }
     } catch (e) {
-      Navigator.pop(context); // 로딩 창 닫기
+      Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('위치 정보를 가져오는데 실패했습니다.')),
+        const SnackBar(content: Text('위치 정보를 가져오는데 실패했습니다.')),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    Query query = FirebaseFirestore.instance.collection('meetings').orderBy('createdAt', descending: true);
+    
+    if (_selectedRegion != '전체') {
+      query = query.where('region', isEqualTo: _selectedRegion);
+    }
+    
+    if (_searchDong.isNotEmpty) {
+      query = query.where('dong', isEqualTo: _searchDong);
+    }
+
     return Scaffold(
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: Text('🌐 동네 번개 둘러보기'),
+        title: const Text('🌐 전국 동네 번개 구경하기', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
       ),
-      // Firestore에서 모든 모임 데이터를 실시간으로 가져옴 (생성일 최신순)
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('meetups')
-            .orderBy('createdAt', descending: true)
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return Center(child: CircularProgressIndicator());
-          }
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return Center(child: Text('현재 활성화된 모임이 없습니다.'));
-          }
-
-          final meetups = snapshot.data!.docs;
-
-          return ListView.builder(
-            itemCount: meetups.length,
-            itemBuilder: (context, index) {
-              var meetup = meetups[index];
-              
-              // Firestore 문서 필드값들 (DB 구조에 맞게 수정 필요)
-              String title = meetup['title'] ?? '제목 없음';
-              String category = meetup['category'] ?? '기타';
-              int currentMembers = meetup['currentMembers'] ?? 1;
-              int maxMembers = meetup['maxMembers'] ?? 4;
-
-              return Card(
-                margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: ListTile(
-                  leading: CircleAvatar(
-                    child: Icon(Icons.people),
-                  ),
-                  title: Text(title, style: TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text('카테고리: $category | 인원: $currentMembers/$maxMembers명'),
-                  trailing: ElevatedButton(
-                    onPressed: () {
-                      // 참가 버튼 누를 때 거리 계산 로직 실행
-                      _checkDistanceAndJoin(context, meetup);
+      body: Column(
+        children: [
+          // 1. 큰 지역 선택 가로 스크롤
+          Container(
+            height: 50,
+            color: Colors.white,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              itemCount: _regions.length,
+              itemBuilder: (context, index) {
+                final region = _regions[index];
+                final isSelected = _selectedRegion == region;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(region, style: TextStyle(
+                      color: isSelected ? Colors.white : Colors.black87,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    )),
+                    selected: isSelected,
+                    selectedColor: Colors.green,
+                    backgroundColor: Colors.grey[200],
+                    showCheckmark: false,
+                    onSelected: (bool selected) {
+                      if (selected) {
+                        setState(() {
+                          _selectedRegion = region;
+                          _searchDong = ''; 
+                          _dongSearchController.clear();
+                        });
+                      }
                     },
-                    child: Text('참가 확인'),
                   ),
+                );
+              },
+            ),
+          ),
+          
+          // 2. 세부 동네 검색 바
+          Container(
+            color: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: TextField(
+              controller: _dongSearchController,
+              decoration: InputDecoration(
+                hintText: '특정 동네 이름으로 찾기 (예: 역삼동)',
+                prefixIcon: const Icon(Icons.search, color: Colors.green),
+                suffixIcon: _searchDong.isNotEmpty 
+                  ? IconButton(
+                      icon: const Icon(Icons.cancel, color: Colors.grey),
+                      onPressed: () {
+                        setState(() {
+                          _searchDong = '';
+                          _dongSearchController.clear();
+                        });
+                      },
+                    )
+                  : null,
+                filled: true,
+                fillColor: Colors.grey[100],
+                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
                 ),
-              );
-            },
-          );
-        },
+              ),
+              onSubmitted: (value) {
+                setState(() {
+                  _searchDong = value.trim();
+                  if (_searchDong.isNotEmpty) _selectedRegion = '전체'; 
+                });
+              },
+            ),
+          ),
+
+          // 3. 게시판 리스트
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: query.snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator(color: Colors.green));
+                }
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.explore_off, size: 60, color: Colors.grey[400]),
+                        const SizedBox(height: 16),
+                        Text(
+                          _searchDong.isNotEmpty 
+                            ? "'$_searchDong'에 생성된 번개가 없어요!" 
+                            : '아직 $_selectedRegion 지역에 생성된 번개가 없어요!', 
+                          style: const TextStyle(color: Colors.grey, fontSize: 16)
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                final meetups = snapshot.data!.docs;
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: meetups.length,
+                  itemBuilder: (context, index) {
+                    var meetup = meetups[index];
+                    
+                    // 💡 [수정됨] DB 데이터 추출 시 에러가 나지 않도록 매우 안전하게 변경
+                    final data = meetup.data() as Map<String, dynamic>? ?? {};
+                    
+                    String title = data['title'] ?? '제목 없음';
+                    String category = data['category'] ?? '기타';
+                    int currentMembers = data['currentParticipants'] ?? 1;
+                    int maxMembers = data['maxParticipants'] ?? 4;
+                    String meetRegion = data['region'] ?? '지역 미상'; 
+                    String meetDong = data['dong'] ?? '동네 미상'; 
+
+                    return Card(
+                      elevation: 2,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4.0),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.green[50],
+                            child: Icon(Icons.bolt, color: Colors.green[700]),
+                          ),
+                          title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 6.0),
+                            child: Text(
+                              '📍 $meetRegion $meetDong | $category\n👥 인원: $currentMembers/$maxMembers명', 
+                              style: const TextStyle(height: 1.4)
+                            ),
+                          ),
+                          isThreeLine: true,
+                          trailing: ElevatedButton(
+                            onPressed: () => _checkDistanceAndJoin(context, meetup),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            child: const Text('참가 확인'),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
