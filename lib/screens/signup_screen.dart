@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import '../widgets/auth_background.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -17,23 +18,19 @@ class _SignupScreenState extends State<SignupScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _passwordConfirmController = TextEditingController();
-  
-  // 💡 [추가] 나이 입력 컨트롤러
   final _ageController = TextEditingController();
 
-  // 💡 [추가] 선택형 데이터 상태 관리
   String _selectedGender = '남성';
   String? _selectedMbti;
-  
+
   bool _isLoading = false;
   String? _errorMessage;
 
-  // 💡 [추가] MBTI 16가지 리스트
   final List<String> _mbtiList = [
     'ISTJ', 'ISFJ', 'INFJ', 'INTJ',
     'ISTP', 'ISFP', 'INFP', 'INTP',
     'ESTP', 'ESFP', 'ENFP', 'ENTP',
-    'ESTJ', 'ESFJ', 'ENFJ', 'ENTJ'
+    'ESTJ', 'ESFJ', 'ENFJ', 'ENTJ',
   ];
 
   @override
@@ -42,14 +39,13 @@ class _SignupScreenState extends State<SignupScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _passwordConfirmController.dispose();
-    _ageController.dispose(); // 💡 메모리 누수 방지
+    _ageController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    
-    // 💡 [추가] MBTI 선택 유효성 검사
+
     if (_selectedMbti == null) {
       setState(() => _errorMessage = 'MBTI를 선택해주세요.');
       return;
@@ -59,9 +55,8 @@ class _SignupScreenState extends State<SignupScreen> {
       _isLoading = true;
       _errorMessage = null;
     });
-    
+
     try {
-      // 💡 [수정] 성별, 나이, MBTI 파라미터 추가 전달
       await _authService.signUpWithEmail(
         email: _emailController.text.trim(),
         password: _passwordController.text,
@@ -81,186 +76,235 @@ class _SignupScreenState extends State<SignupScreen> {
     }
   }
 
+  Widget _sectionLabel(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: AuthBackground.textSecondary,
+        fontSize: 13,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 0.3,
+      ),
+    );
+  }
+
+  Widget _genderChip(String label, String emoji, Color accent) {
+    final selected = _selectedGender == label;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedGender = label),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: selected ? accent.withOpacity(0.15) : AuthBackground.fieldFill,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: selected ? accent : AuthBackground.panelBorder, width: 1.4),
+          ),
+          child: Column(
+            children: [
+              Text(emoji, style: const TextStyle(fontSize: 20)),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected ? accent : AuthBackground.textSecondary,
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('회원가입')),
-      body: SafeArea(
-        child: Center(
+      backgroundColor: AuthBackground.bg,
+      appBar: AppBar(
+        backgroundColor: AuthBackground.bg,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
+        title: const Text('회원가입', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      ),
+      body: AuthBackground(
+        child: SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
             child: Form(
               key: _formKey,
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  TextFormField(
-                    controller: _nicknameController,
-                    decoration: const InputDecoration(
-                      labelText: '닉네임',
-                      prefixIcon: Icon(Icons.person_outline),
-                      border: OutlineInputBorder(),
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: AuthBackground.panel,
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: AuthBackground.panelBorder),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return '닉네임을 입력해주세요.';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  TextFormField(
-                    controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: '이메일',
-                      prefixIcon: Icon(Icons.email_outlined),
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      if (value == null || !value.contains('@')) {
-                        return '올바른 이메일을 입력해주세요.';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  TextFormField(
-                    controller: _passwordController,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: '비밀번호 (6자 이상)',
-                      prefixIcon: Icon(Icons.lock_outline),
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      if (value == null || value.length < 6) {
-                        return '비밀번호는 6자 이상이어야 합니다.';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  TextFormField(
-                    controller: _passwordConfirmController,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: '비밀번호 확인',
-                      prefixIcon: Icon(Icons.lock_outline),
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      if (value != _passwordController.text) {
-                        return '비밀번호가 일치하지 않습니다.';
-                      }
-                      return null;
-                    },
-                  ),
-                  
-                  const SizedBox(height: 24),
-                  const Divider(),
-                  const SizedBox(height: 16),
-                  const Text('프로필 정보', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
-                  const SizedBox(height: 16),
-
-                  // 💡 [추가] 1. 나이 입력란
-                  TextFormField(
-                    controller: _ageController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: '실제 나이 (예: 25)',
-                      hintText: '앱에서는 20대 등으로만 표시됩니다.',
-                      prefixIcon: Icon(Icons.cake_outlined),
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) return '나이를 입력해주세요.';
-                      if (int.tryParse(value.trim()) == null) return '숫자만 입력 가능합니다.';
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-
-                  // 💡 [추가] 2. 성별 선택
-                  const Text('성별', style: TextStyle(fontSize: 14)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ChoiceChip(
-                          label: const Center(child: Text('👨 남성')),
-                          selected: _selectedGender == '남성',
-                          selectedColor: Colors.green[200],
-                          onSelected: (selected) => setState(() => _selectedGender = '남성'),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _sectionLabel('계정 정보'),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _nicknameController,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: authFieldDecoration(label: '닉네임', icon: Icons.person_outline),
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return '닉네임을 입력해주세요.';
+                            }
+                            return null;
+                          },
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ChoiceChip(
-                          label: const Center(child: Text('👩 여성')),
-                          selected: _selectedGender == '여성',
-                          selectedColor: Colors.green[200],
-                          onSelected: (selected) => setState(() => _selectedGender = '여성'),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _emailController,
+                          style: const TextStyle(color: Colors.white),
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: authFieldDecoration(label: '이메일', icon: Icons.email_outlined),
+                          validator: (value) {
+                            if (value == null || !value.contains('@')) {
+                              return '올바른 이메일을 입력해주세요.';
+                            }
+                            return null;
+                          },
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _passwordController,
+                          style: const TextStyle(color: Colors.white),
+                          obscureText: true,
+                          decoration: authFieldDecoration(label: '비밀번호 (6자 이상)', icon: Icons.lock_outline),
+                          validator: (value) {
+                            if (value == null || value.length < 6) {
+                              return '비밀번호는 6자 이상이어야 합니다.';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _passwordConfirmController,
+                          style: const TextStyle(color: Colors.white),
+                          obscureText: true,
+                          decoration: authFieldDecoration(label: '비밀번호 확인', icon: Icons.lock_outline),
+                          validator: (value) {
+                            if (value != _passwordController.text) {
+                              return '비밀번호가 일치하지 않습니다.';
+                            }
+                            return null;
+                          },
+                        ),
 
-                  // 💡 [추가] 3. MBTI 선택
-                  DropdownButtonFormField<String>(
-                    decoration: const InputDecoration(
-                      labelText: 'MBTI',
-                      prefixIcon: Icon(Icons.psychology_outlined),
-                      border: OutlineInputBorder(),
-                    ),
-                    value: _selectedMbti,
-                    items: _mbtiList.map((mbti) {
-                      return DropdownMenuItem(value: mbti, child: Text(mbti));
-                    }).toList(),
-                    onChanged: (value) {
-                      setState(() {
-                        _selectedMbti = value;
-                        if (_errorMessage == 'MBTI를 선택해주세요.') _errorMessage = null; // 에러 메시지 초기화
-                      });
-                    },
-                  ),
-                  
-                  if (_errorMessage != null) ...[
-                    const SizedBox(height: 24),
-                    Text(
-                      _errorMessage!,
-                      style: const TextStyle(color: Colors.red),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                  
-                  const SizedBox(height: 24),
-                  
-                  SizedBox(
-                    height: 50,
-                    child: ElevatedButton(
-                      onPressed: _isLoading ? null : _submit,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                      ),
-                      child: _isLoading
-                          ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
+                        const SizedBox(height: 24),
+                        Divider(color: AuthBackground.panelBorder),
+                        const SizedBox(height: 16),
+
+                        _sectionLabel('프로필 정보'),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _ageController,
+                          style: const TextStyle(color: Colors.white),
+                          keyboardType: TextInputType.number,
+                          decoration: authFieldDecoration(
+                            label: '실제 나이 (예: 25)',
+                            icon: Icons.cake_outlined,
+                            hint: '앱에서는 20대 등으로만 표시됩니다.',
+                          ),
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) return '나이를 입력해주세요.';
+                            if (int.tryParse(value.trim()) == null) return '숫자만 입력 가능합니다.';
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 16),
+
+                        _sectionLabel('성별'),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            _genderChip('남성', '👨', AuthBackground.teal),
+                            const SizedBox(width: 12),
+                            _genderChip('여성', '👩', AuthBackground.purple),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+
+                        _sectionLabel('MBTI'),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          dropdownColor: AuthBackground.panel,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: authFieldDecoration(label: 'MBTI 선택', icon: Icons.psychology_outlined),
+                          value: _selectedMbti,
+                          items: _mbtiList.map((mbti) {
+                            return DropdownMenuItem(value: mbti, child: Text(mbti));
+                          }).toList(),
+                          onChanged: (value) {
+                            setState(() {
+                              _selectedMbti = value;
+                              if (_errorMessage == 'MBTI를 선택해주세요.') _errorMessage = null;
+                            });
+                          },
+                        ),
+
+                        if (_errorMessage != null) ...[
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.error_outline, color: Colors.redAccent, size: 18),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _errorMessage!,
+                                    style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+
+                        const SizedBox(height: 22),
+                        SizedBox(
+                          height: 52,
+                          child: ElevatedButton(
+                            onPressed: _isLoading ? null : _submit,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AuthBackground.orange,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
                               ),
-                            )
-                          : const Text('회원가입', style: TextStyle(fontSize: 16)),
+                            ),
+                            child: _isLoading
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('회원가입', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
+                  const SizedBox(height: 16),
                 ],
               ),
             ),
