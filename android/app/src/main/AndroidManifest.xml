@@ -2,6 +2,18 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <queries>
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="kakaomap" />
+    </intent>
+
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="nmap" />
+    </intent>
+    </queries>
+    
     <application
         android:label="hyper_local_project"
         android:name="${applicationName}"
@@ -41,10 +53,4 @@
          https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT"/>
-            <data android:mimeType="text/plain"/>
-        </intent>
-    </queries>
 </manifest>

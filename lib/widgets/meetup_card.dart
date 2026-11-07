@@ -1,56 +1,89 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // 💡 Timestamp 처리를 위해 추가
 
 class MeetupCard extends StatelessWidget {
   final Map<String, dynamic> meetupData;
 
-  const MeetupCard({super.key, required this.meetupData});
+  /// 사용자가 내 정보에서 설정한 관심 카테고리 순위입니다.
+  /// null이면 관심 카테고리 표시를 보여주지 않습니다.
+  final int? preferredCategoryRank;
+
+  const MeetupCard({
+    super.key,
+    required this.meetupData,
+    this.preferredCategoryRank,
+  });
+
+  DateTime? _readDateTime(dynamic value) {
+    if (value is DateTime) return value;
+    // cloud_firestore Timestamp는 toDate()를 제공하지만 타입 import 없이
+    // 기존 프로젝트의 Timestamp 필드를 처리하도록 dynamic 변환을 사용합니다.
+    try {
+      final dynamic converted = value?.toDate();
+      if (converted is DateTime) return converted;
+    } catch (_) {
+      // Timestamp가 아닌 값이면 아래 문자열 처리를 시도합니다.
+    }
+    if (value is String) return DateTime.tryParse(value);
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final title = meetupData['title'] ?? '제목 없음';
-    final category = meetupData['category'] ?? '기타';
-    final location = meetupData['location'] ?? '지도 표시 지점';
-    
-    final int currentParticipants = meetupData['currentParticipants'] ?? 1;
-    final int maxParticipants = meetupData['maxParticipants'] ?? 4;
-    final isFull = currentParticipants >= maxParticipants;
+    final String title = (meetupData['title'] ?? '제목 없음').toString();
+    final String category = (meetupData['category'] ?? '기타').toString();
+    final String location =
+        (meetupData['location'] ??
+                meetupData['dong'] ??
+                meetupData['region'] ??
+                '지도 표시 지점')
+            .toString();
 
-    // 💡 2단계 핵심 로직: 현재 시간과 마감 시간을 비교해서 종료 여부(isExpired) 판단
-    bool isExpired = false;
-    if (meetupData['deadline'] != null) {
-      final deadline = (meetupData['deadline'] as Timestamp).toDate();
-      if (DateTime.now().isAfter(deadline)) {
-        isExpired = true;
-      }
-    }
+    final int currentParticipants =
+        (meetupData['currentParticipants'] as num?)?.toInt() ?? 1;
+    final int maxParticipants =
+        (meetupData['maxParticipants'] as num?)?.toInt() ?? 4;
+    final bool isFull = currentParticipants >= maxParticipants;
+
+    final DateTime? deadline = _readDateTime(meetupData['deadline']);
+    final bool isExpired = deadline != null && DateTime.now().isAfter(deadline);
 
     Widget categoryIcon;
     switch (category) {
       case '식사':
-        categoryIcon = const Center(child: Text('🍔', style: TextStyle(fontSize: 24)));
+        categoryIcon = const Center(
+          child: Text('🍔', style: TextStyle(fontSize: 24)),
+        );
         break;
       case '운동':
-        categoryIcon = const Center(child: Text('⚽', style: TextStyle(fontSize: 24)));
+        categoryIcon = const Center(
+          child: Text('⚽', style: TextStyle(fontSize: 24)),
+        );
         break;
       case '공부':
-        categoryIcon = const Center(child: Text('📚', style: TextStyle(fontSize: 24)));
+        categoryIcon = const Center(
+          child: Text('📚', style: TextStyle(fontSize: 24)),
+        );
         break;
       case '게임':
-        categoryIcon = const Center(child: Text('🎮', style: TextStyle(fontSize: 24)));
+        categoryIcon = const Center(
+          child: Text('🎮', style: TextStyle(fontSize: 24)),
+        );
         break;
       case '산책':
-        categoryIcon = const Center(child: Text('🐕', style: TextStyle(fontSize: 24)));
+        categoryIcon = const Center(
+          child: Text('🐕', style: TextStyle(fontSize: 24)),
+        );
         break;
       default:
-        categoryIcon = const Center(child: Text('⚡', style: TextStyle(fontSize: 24)));
+        categoryIcon = const Center(
+          child: Text('⚡', style: TextStyle(fontSize: 24)),
+        );
     }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        // 💡 종료되었으면 카드 배경을 옅은 회색으로 변경
         color: isExpired ? Colors.grey[200] : Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [
@@ -63,7 +96,6 @@ class MeetupCard extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              // 💡 아이콘 배경도 종료 여부에 따라 회색 처리
               color: isExpired ? Colors.grey[300] : Colors.green[50],
               borderRadius: BorderRadius.circular(12),
             ),
@@ -82,29 +114,36 @@ class MeetupCard extends StatelessWidget {
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
-                          // 💡 종료된 제목은 회색으로 만들고 취소선(-) 긋기
                           color: isExpired ? Colors.grey[600] : Colors.black,
-                          decoration: isExpired ? TextDecoration.lineThrough : null,
+                          decoration: isExpired
+                              ? TextDecoration.lineThrough
+                              : null,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    // 💡 종료되었을 때만 우측에 [종료] 뱃지 띄우기
                     if (isExpired) ...[
                       const SizedBox(width: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 3,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.grey[400],
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: const Text(
                           '종료',
-                          style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      )
-                    ]
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 4),
@@ -114,6 +153,28 @@ class MeetupCard extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                if (preferredCategoryRank != null) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(color: Colors.green.shade200),
+                    ),
+                    child: Text(
+                      '내 관심 ${preferredCategoryRank}순위',
+                      style: TextStyle(
+                        color: Colors.green.shade800,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -121,8 +182,9 @@ class MeetupCard extends StatelessWidget {
           Text(
             '$currentParticipants/$maxParticipants 명',
             style: TextStyle(
-              // 💡 종료되었으면 빨간/초록 대신 일괄 회색 처리
-              color: isExpired ? Colors.grey : (isFull ? Colors.red : Colors.green),
+              color: isExpired
+                  ? Colors.grey
+                  : (isFull ? Colors.red : Colors.green),
               fontWeight: FontWeight.bold,
             ),
           ),

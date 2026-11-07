@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:google_generative_ai/google_generative_ai.dart'; 
+import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import '../services/chat_service.dart';
@@ -25,34 +25,60 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
   final TextEditingController _messageController = TextEditingController();
 
   bool _showEmojiPanel = false;
-  
+  bool _isSendingMessage = false;
+
   // 💡 [추가] 차단한 유저들의 UID를 담아둘 리스트
-  List<String> _blockedUsers = []; 
+  List<String> _blockedUsers = [];
 
   final List<String> _emojis = const [
-    '😀', '😂', '😍', '👍', '🙏', '🔥', '🎉',
-    '⚡', '🍔', '☕', '⚽', '📚', '🎮', '🐕',
+    '😀',
+    '😂',
+    '😍',
+    '👍',
+    '🙏',
+    '🔥',
+    '🎉',
+    '⚡',
+    '🍔',
+    '☕',
+    '⚽',
+    '📚',
+    '🎮',
+    '🐕',
   ];
 
   @override
   void initState() {
     super.initState();
-    _chatService.markAsRead(widget.roomId);
-    _loadBlockedUsers(); // 💡 채팅방 열릴 때 내가 차단한 사람 목록 불러오기
+    _markAsReadSafely();
+    _loadBlockedUsers(); // 채팅방 진입 시 차단 목록 불러오기
+  }
+
+  Future<void> _markAsReadSafely() async {
+    try {
+      await _chatService.markAsRead(widget.roomId);
+    } catch (error) {
+      debugPrint('[읽음 처리 실패] $error');
+    }
   }
 
   // 💡 [추가] 내 차단 목록을 DB에서 가져오는 함수
   Future<void> _loadBlockedUsers() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-    
+
     try {
-      final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
       final data = doc.data();
       if (data != null && data['blockedUsers'] != null) {
-        setState(() {
-          _blockedUsers = List<String>.from(data['blockedUsers']);
-        });
+        if (mounted) {
+          setState(() {
+            _blockedUsers = List<String>.from(data['blockedUsers']);
+          });
+        }
       }
     } catch (e) {
       print("차단 목록 로드 오류: $e");
@@ -67,15 +93,32 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
   Future<void> _send({String type = 'text'}) async {
     final text = _messageController.text;
-    if (text.trim().isEmpty) return;
-    _messageController.clear();
+    if (text.trim().isEmpty || _isSendingMessage) return;
 
-    await _chatService.sendMessage(
-      roomId: widget.roomId,
-      text: text,
-      type: type,
-    );
-    await _chatService.markAsRead(widget.roomId);
+    setState(() => _isSendingMessage = true);
+    try {
+      await _chatService.sendMessage(
+        roomId: widget.roomId,
+        text: text,
+        type: type,
+      );
+      if (!mounted) return;
+      _messageController.clear();
+      await _markAsReadSafely();
+    } catch (error) {
+      debugPrint('[메시지 전송 실패] $error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('메시지를 보내지 못했습니다. 채팅방 참가 상태를 확인해 주세요.\n$error'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSendingMessage = false);
+    }
   }
 
   Future<void> _leaveChatAndMeeting() async {
@@ -84,17 +127,20 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
     try {
       await _chatService.leaveRoom(widget.roomId);
-      await FirebaseFirestore.instance.collection('meetings').doc(widget.roomId).update({
-        'participants': FieldValue.arrayRemove([uid]),
-        'currentParticipants': FieldValue.increment(-1),
-      });
+      await FirebaseFirestore.instance
+          .collection('meetings')
+          .doc(widget.roomId)
+          .update({
+            'participants': FieldValue.arrayRemove([uid]),
+            'currentParticipants': FieldValue.increment(-1),
+          });
 
       if (mounted) {
-        Navigator.pop(context); 
-        Navigator.pop(context); 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('모임 참여가 취소되었습니다.')),
-        );
+        Navigator.pop(context);
+        Navigator.pop(context);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('모임 참여가 취소되었습니다.')));
       }
     } catch (e) {
       print("나가기 오류: $e");
@@ -110,12 +156,15 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context), 
+            onPressed: () => Navigator.pop(context),
             child: const Text('아니요', style: TextStyle(color: Colors.grey)),
           ),
           TextButton(
-            onPressed: _leaveChatAndMeeting, 
-            child: const Text('예', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            onPressed: _leaveChatAndMeeting,
+            child: const Text(
+              '예',
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
@@ -131,14 +180,22 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
           children: [
             CircularProgressIndicator(color: Colors.orange),
             SizedBox(width: 20),
-            Expanded(child: Text("AI 요정이 눈치를 보는 중... 💡", style: TextStyle(fontWeight: FontWeight.bold))),
+            Expanded(
+              child: Text(
+                "AI 요정이 눈치를 보는 중... 💡",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
           ],
         ),
       ),
     );
 
     try {
-      final meetingDoc = await FirebaseFirestore.instance.collection('meetings').doc(widget.roomId).get();
+      final meetingDoc = await FirebaseFirestore.instance
+          .collection('meetings')
+          .doc(widget.roomId)
+          .get();
       final meetingData = meetingDoc.data();
       if (meetingData == null) {
         if (context.mounted) {
@@ -147,7 +204,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         }
         return;
       }
-      
+
       final category = meetingData['category'] ?? '모임';
       final title = meetingData['title'] ?? '';
       final List<dynamic> participants = meetingData['participants'] ?? [];
@@ -155,8 +212,12 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       List<String> mbtiList = [];
       for (var uid in participants.take(5)) {
         try {
-          final userDoc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-          final mbti = (userDoc.data() as Map<String, dynamic>?)?['mbti'] ?? '비공개';
+          final userDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .get();
+          final mbti =
+              (userDoc.data() as Map<String, dynamic>?)?['mbti'] ?? '비공개';
           if (mbti != '비공개') mbtiList.add(mbti);
         } catch (e) {
           print("MBTI 수집 실패(무시하고 진행): $e");
@@ -168,7 +229,8 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
       );
 
-      final prompt = """
+      final prompt =
+          """
       너는 동네 번개 모임 채팅방의 발랄한 'AI 요정'이야.
       채팅방에 정적이 흘러서 분위기를 띄워야 해! 참여자들의 MBTI 조합과 모임 주제를 보고, 다같이 대답하기 좋은 재미있는 첫 질문(아이스브레이킹)을 딱 1개만 던져줘.
       - 모임 주제: [$category] $title
@@ -180,35 +242,43 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       3. 절대 3문장을 넘기지 말고 친근한 반말로 해줘.
       """;
 
-      final response = await model.generateContent([Content.text(prompt)]).timeout(
-        const Duration(seconds: 25),
-      );
-      
+      final response = await model
+          .generateContent([Content.text(prompt)])
+          .timeout(const Duration(seconds: 25));
+
       final icebreakerText = response.text ?? '여러분, 오늘 저녁 메뉴로 뭐 드실 건가요? 😊';
 
       try {
-        final roomRef = FirebaseFirestore.instance.collection('chatRooms').doc(widget.roomId);
-        
+        final roomRef = FirebaseFirestore.instance
+            .collection('chatRooms')
+            .doc(widget.roomId);
+
         await roomRef.collection('messages').add({
           'text': icebreakerText,
           'senderId': 'ai_fairy',
           'senderName': '🧚 AI 요정',
-          'createdAt': FieldValue.serverTimestamp(), 
+          'createdAt': FieldValue.serverTimestamp(),
           'type': 'text',
         });
 
-        await roomRef.set({
+        await roomRef.update({
           'lastMessage': icebreakerText,
           'lastMessageAt': FieldValue.serverTimestamp(),
           'lastSenderId': 'ai_fairy',
-        }, SetOptions(merge: true));
-
+        });
       } catch (dbError) {
-        print("🚨 DB 저장 실패: $dbError");
+        debugPrint('[AI 아이스브레이킹 저장 실패] $dbError');
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('AI 질문을 채팅방에 등록하지 못했습니다.\n$dbError'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
 
-      if (context.mounted) Navigator.pop(context); 
-
+      if (context.mounted) Navigator.pop(context);
     } catch (e) {
       if (context.mounted) {
         Navigator.pop(context);
@@ -226,7 +296,12 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
           children: [
             CircularProgressIndicator(color: Colors.purple),
             SizedBox(width: 20),
-            Expanded(child: Text("AI가 대화 내용을 요약 중입니다... 🪄", style: TextStyle(fontWeight: FontWeight.bold))),
+            Expanded(
+              child: Text(
+                "AI가 대화 내용을 요약 중입니다... 🪄",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
           ],
         ),
       ),
@@ -234,15 +309,15 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
     try {
       final querySnapshot = await FirebaseFirestore.instance
-          .collection('chatRooms') 
-          .doc(widget.roomId) 
+          .collection('chatRooms')
+          .doc(widget.roomId)
           .collection('messages')
-          .orderBy('createdAt', descending: true) 
+          .orderBy('createdAt', descending: true)
           .limit(30)
           .get();
 
       if (querySnapshot.docs.isEmpty) {
-        Navigator.pop(context); 
+        Navigator.pop(context);
         _showCustomDialog(context, "알림", "아직 나누어진 대화가 없어요! 첫 대화를 시작해 보세요 💬");
         return;
       }
@@ -257,10 +332,11 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
       final model = GenerativeModel(
         model: 'gemini-3.6-flash',
-        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '', 
+        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
       );
 
-      final prompt = """
+      final prompt =
+          """
       너는 번개 모임 채팅방의 센스 있는 AI 매니저야.
       아래의 최근 채팅 내용을 바탕으로, 늦게 들어온 참여자를 위해 핵심 내용을 3가지로 압축해서 요약해 줘.
       - 말투는 친근하고 유쾌하게 (~요, ~임!)
@@ -274,26 +350,38 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       final summaryText = response.text ?? '요약을 생성하지 못했어요 🥲';
 
       if (!context.mounted) return;
-      Navigator.pop(context); 
+      Navigator.pop(context);
 
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           title: const Row(
             children: [
               Icon(Icons.auto_awesome, color: Colors.purple),
               SizedBox(width: 8),
-              Text("AI 늦참 요약 봇", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              Text(
+                "AI 늦참 요약 봇",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
             ],
           ),
           content: Text(
             summaryText,
-            style: const TextStyle(fontSize: 15, height: 1.5, color: Colors.black87),
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.5,
+              color: Colors.black87,
+            ),
           ),
           actions: [
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.purple,
+                foregroundColor: Colors.white,
+              ),
               onPressed: () => Navigator.pop(context),
               child: const Text("확인 완료! 👍"),
             ),
@@ -302,7 +390,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       );
     } catch (e) {
       if (!context.mounted) return;
-      Navigator.pop(context); 
+      Navigator.pop(context);
       _showCustomDialog(context, "에러", "요약을 불러오는 데 실패했습니다: $e");
     }
   }
@@ -314,7 +402,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
         content: Text(content),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("확인")),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("확인"),
+          ),
         ],
       ),
     );
@@ -331,7 +422,11 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       ),
       child: Text(
         text,
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color[700]),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          color: color[700],
+        ),
       ),
     );
   }
@@ -366,7 +461,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                 hintText: '신고 사유를 적어주세요 (선택)',
                 filled: true,
                 fillColor: Colors.grey[100],
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
               ),
               maxLines: 2,
             ),
@@ -380,7 +478,13 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('차단하기', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            child: const Text(
+              '차단하기',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
         ],
       ),
@@ -398,9 +502,12 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       });
 
       // 2. 내 정보(users)에 차단 유저 UID 추가
-      await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).update({
-        'blockedUsers': FieldValue.arrayUnion([targetUid]),
-      });
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser.uid)
+          .update({
+            'blockedUsers': FieldValue.arrayUnion([targetUid]),
+          });
 
       // 3. 로컬 상태 업데이트 (지금 띄워진 채팅창에서 즉시 글을 숨기기 위해)
       setState(() {
@@ -410,7 +517,9 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       if (mounted) {
         Navigator.pop(context); // 프로필 팝업 닫기
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('[$targetName]님을 차단했습니다. 더 이상 메시지가 보이지 않습니다.')),
+          SnackBar(
+            content: Text('[$targetName]님을 차단했습니다. 더 이상 메시지가 보이지 않습니다.'),
+          ),
         );
       }
     } catch (e) {
@@ -419,23 +528,34 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
   }
 
   void _showUserProfileDialog(String targetUid) {
-    if (targetUid == 'ai_fairy') return; 
+    if (targetUid == 'ai_fairy') return;
 
     showDialog(
       context: context,
       builder: (context) {
         return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
           child: FutureBuilder<DocumentSnapshot>(
-            future: FirebaseFirestore.instance.collection('users').doc(targetUid).get(),
+            future: FirebaseFirestore.instance
+                .collection('users')
+                .doc(targetUid)
+                .get(),
             builder: (context, snapshot) {
               if (!snapshot.hasData) {
-                return const SizedBox(height: 200, child: Center(child: CircularProgressIndicator()));
+                return const SizedBox(
+                  height: 200,
+                  child: Center(child: CircularProgressIndicator()),
+                );
               }
 
               final userData = snapshot.data!.data() as Map<String, dynamic>?;
               if (userData == null) {
-                return const SizedBox(height: 200, child: Center(child: Text('유저 정보를 찾을 수 없습니다.')));
+                return const SizedBox(
+                  height: 200,
+                  child: Center(child: Text('유저 정보를 찾을 수 없습니다.')),
+                );
               }
 
               final nickname = userData['displayName'] ?? '이름 없음';
@@ -459,11 +579,25 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                         CircleAvatar(
                           radius: 45,
                           backgroundColor: Colors.green[50],
-                          backgroundImage: photoUrl != null ? NetworkImage(photoUrl) : null,
-                          child: photoUrl == null ? const Icon(Icons.person, color: Colors.green, size: 45) : null,
+                          backgroundImage: photoUrl != null
+                              ? NetworkImage(photoUrl)
+                              : null,
+                          child: photoUrl == null
+                              ? const Icon(
+                                  Icons.person,
+                                  color: Colors.green,
+                                  size: 45,
+                                )
+                              : null,
                         ),
                         const SizedBox(height: 16),
-                        Text(nickname, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                        Text(
+                          nickname,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                         const SizedBox(height: 20),
                         Wrap(
                           alignment: WrapAlignment.center,
@@ -483,10 +617,18 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                             onPressed: () => Navigator.pop(context),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.green,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                               elevation: 0,
                             ),
-                            child: const Text('닫기', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            child: const Text(
+                              '닫기',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
                         ),
                       ],
@@ -498,7 +640,8 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                       child: IconButton(
                         icon: const Icon(Icons.block, color: Colors.redAccent),
                         tooltip: '차단 및 신고',
-                        onPressed: () => _reportAndBlockUser(targetUid, nickname),
+                        onPressed: () =>
+                            _reportAndBlockUser(targetUid, nickname),
                       ),
                     ),
                   ],
@@ -513,16 +656,16 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
   Widget _buildAvatar(String senderId, String senderName, bool isAiFairy) {
     return GestureDetector(
-      onTap: () => _showUserProfileDialog(senderId), 
+      onTap: () => _showUserProfileDialog(senderId),
       child: Column(
         children: [
           CircleAvatar(
             radius: 18,
             backgroundColor: isAiFairy ? Colors.orange[100] : Colors.green[100],
             child: Icon(
-              isAiFairy ? Icons.auto_awesome : Icons.person, 
-              size: 20, 
-              color: isAiFairy ? Colors.orange : Colors.green[700]
+              isAiFairy ? Icons.auto_awesome : Icons.person,
+              size: 20,
+              color: isAiFairy ? Colors.orange : Colors.green[700],
             ),
           ),
         ],
@@ -535,15 +678,21 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
 
     return Scaffold(
-      backgroundColor: Colors.grey[50], 
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: Text(widget.roomTitle, style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(
+          widget.roomTitle,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.green,
         foregroundColor: Colors.white,
         elevation: 1,
         actions: [
           IconButton(
-            icon: const Icon(Icons.lightbulb_outline, color: Colors.yellowAccent),
+            icon: const Icon(
+              Icons.lightbulb_outline,
+              color: Colors.yellowAccent,
+            ),
             tooltip: 'AI 아이스브레이킹',
             onPressed: () => _triggerIcebreaker(context),
           ),
@@ -565,23 +714,31 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _chatService.messagesStream(widget.roomId),
               builder: (context, snapshot) {
-                if (snapshot.hasError) return Center(child: Text('오류: ${snapshot.error}'));
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                if (snapshot.hasError)
+                  return Center(child: Text('오류: ${snapshot.error}'));
+                if (!snapshot.hasData)
+                  return const Center(child: CircularProgressIndicator());
 
                 final messages = snapshot.data!.docs;
                 if (messages.isEmpty) {
                   return const Center(
-                    child: Text('첫 메시지를 보내보세요!', style: TextStyle(color: Colors.black54)),
+                    child: Text(
+                      '첫 메시지를 보내보세요!',
+                      style: TextStyle(color: Colors.black54),
+                    ),
                   );
                 }
 
                 WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _chatService.markAsRead(widget.roomId);
+                  _markAsReadSafely();
                 });
 
                 return ListView.builder(
                   reverse: true,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 16,
+                  ),
                   itemCount: messages.length,
                   itemBuilder: (context, index) {
                     final data = messages[index].data();
@@ -594,58 +751,86 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
                     // 💡 [핵심 로직] 내가 차단한 유저의 메시지라면 UI에서 렌더링하지 않음 (숨김 처리)
                     if (_blockedUsers.contains(senderId)) {
-                      return const SizedBox.shrink(); 
+                      return const SizedBox.shrink();
                     }
 
                     return Container(
                       margin: const EdgeInsets.only(bottom: 20),
                       child: Row(
-                        mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+                        mainAxisAlignment: isMe
+                            ? MainAxisAlignment.end
+                            : MainAxisAlignment.start,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if (!isMe) _buildAvatar(senderId, senderName, isAiFairy),
+                          if (!isMe)
+                            _buildAvatar(senderId, senderName, isAiFairy),
                           if (!isMe) const SizedBox(width: 8),
 
                           Flexible(
                             child: Column(
-                              crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                              crossAxisAlignment: isMe
+                                  ? CrossAxisAlignment.end
+                                  : CrossAxisAlignment.start,
                               children: [
                                 if (!isMe)
                                   Padding(
-                                    padding: const EdgeInsets.only(bottom: 4, left: 4),
+                                    padding: const EdgeInsets.only(
+                                      bottom: 4,
+                                      left: 4,
+                                    ),
                                     child: Text(
-                                      senderName, 
+                                      senderName,
                                       style: TextStyle(
-                                        fontSize: 13, 
-                                        fontWeight: FontWeight.bold, 
-                                        color: isAiFairy ? Colors.orange[800] : Colors.black54
-                                      )
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                        color: isAiFairy
+                                            ? Colors.orange[800]
+                                            : Colors.black54,
+                                      ),
                                     ),
                                   ),
-                                
+
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: isMe ? Colors.green : (isAiFairy ? Colors.orange[50] : Colors.white),
+                                    color: isMe
+                                        ? Colors.green
+                                        : (isAiFairy
+                                              ? Colors.orange[50]
+                                              : Colors.white),
                                     borderRadius: BorderRadius.only(
                                       topLeft: const Radius.circular(20),
                                       topRight: const Radius.circular(20),
-                                      bottomLeft: Radius.circular(isMe ? 20 : 4), 
-                                      bottomRight: Radius.circular(isMe ? 4 : 20),
+                                      bottomLeft: Radius.circular(
+                                        isMe ? 20 : 4,
+                                      ),
+                                      bottomRight: Radius.circular(
+                                        isMe ? 4 : 20,
+                                      ),
                                     ),
                                     boxShadow: [
                                       BoxShadow(
                                         color: Colors.black.withOpacity(0.05),
                                         blurRadius: 5,
                                         offset: const Offset(0, 2),
-                                      )
+                                      ),
                                     ],
-                                    border: isAiFairy ? Border.all(color: Colors.orange[300]!, width: 1) : null,
+                                    border: isAiFairy
+                                        ? Border.all(
+                                            color: Colors.orange[300]!,
+                                            width: 1,
+                                          )
+                                        : null,
                                   ),
                                   child: Text(
                                     text,
                                     style: TextStyle(
-                                      color: isMe ? Colors.white : Colors.black87,
+                                      color: isMe
+                                          ? Colors.white
+                                          : Colors.black87,
                                       fontSize: type == 'emoji' ? 28 : 15,
                                       height: 1.4,
                                     ),
@@ -665,7 +850,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
               },
             ),
           ),
-          
+
           if (_showEmojiPanel)
             Container(
               height: 96,
@@ -681,14 +866,19 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                       _messageController.text = emoji;
                       await _send(type: 'emoji');
                     },
-                    child: Center(child: Text(emoji, style: const TextStyle(fontSize: 26))),
+                    child: Center(
+                      child: Text(emoji, style: const TextStyle(fontSize: 26)),
+                    ),
                   );
                 }).toList(),
               ),
             ),
 
           StreamBuilder<DocumentSnapshot>(
-            stream: FirebaseFirestore.instance.collection('meetings').doc(widget.roomId).snapshots(),
+            stream: FirebaseFirestore.instance
+                .collection('meetings')
+                .doc(widget.roomId)
+                .snapshots(),
             builder: (context, snapshot) {
               bool isExpired = false;
               if (snapshot.hasData && snapshot.data!.exists) {
@@ -710,7 +900,11 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                     child: const Text(
                       '종료된 번개의 채팅방입니다. 더 이상 메시지를 보낼 수 없습니다.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.black54, fontWeight: FontWeight.bold, fontSize: 14),
+                      style: TextStyle(
+                        color: Colors.black54,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
                     ),
                   ),
                 );
@@ -721,12 +915,22 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                   padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -2))],
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, -2),
+                      ),
+                    ],
                   ),
                   child: Row(
                     children: [
                       IconButton(
-                        icon: Icon(_showEmojiPanel ? Icons.keyboard : Icons.emoji_emotions_outlined),
+                        icon: Icon(
+                          _showEmojiPanel
+                              ? Icons.keyboard
+                              : Icons.emoji_emotions_outlined,
+                        ),
                         color: Colors.green,
                         onPressed: () {
                           setState(() {
@@ -743,7 +947,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                             hintText: '메시지를 입력하세요',
                             filled: true,
                             fillColor: Colors.grey[100],
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(24),
                               borderSide: BorderSide.none,
@@ -757,9 +964,17 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                         ),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.send),
+                        icon: _isSendingMessage
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.send),
                         color: Colors.green,
-                        onPressed: _send,
+                        onPressed: _isSendingMessage ? null : _send,
                       ),
                     ],
                   ),

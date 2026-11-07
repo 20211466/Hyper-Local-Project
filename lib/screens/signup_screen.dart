@@ -1,7 +1,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
 import '../services/auth_service.dart';
 import '../widgets/auth_background.dart';
+import '../widgets/category_preference_selector.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -22,6 +24,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
   String _selectedGender = '남성';
   String? _selectedMbti;
+  List<String> _preferredCategories = [];
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -45,7 +48,6 @@ class _SignupScreenState extends State<SignupScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-
     if (_selectedMbti == null) {
       setState(() => _errorMessage = 'MBTI를 선택해주세요.');
       return;
@@ -64,13 +66,17 @@ class _SignupScreenState extends State<SignupScreen> {
         gender: _selectedGender,
         age: int.parse(_ageController.text.trim()),
         mbti: _selectedMbti!,
+        preferredCategories: _preferredCategories,
       );
-      // 회원가입 성공 시 자동 로그인되며, MainShell이 화면을 전환합니다.
+
+      // 기존 회원가입 완료 흐름을 유지합니다.
       if (mounted) Navigator.of(context).pop();
     } on FirebaseAuthException catch (e) {
-      setState(() => _errorMessage = _authService.messageFor(e));
+      if (mounted) setState(() => _errorMessage = _authService.messageFor(e));
     } catch (e) {
-      setState(() => _errorMessage = '회원가입 중 오류가 발생했습니다: $e');
+      if (mounted) {
+        setState(() => _errorMessage = '회원가입 중 오류가 발생했습니다: $e');
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -96,9 +102,14 @@ class _SignupScreenState extends State<SignupScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color: selected ? accent.withOpacity(0.15) : AuthBackground.fieldFill,
+            color: selected
+                ? accent.withOpacity(0.15)
+                : AuthBackground.fieldFill,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: selected ? accent : AuthBackground.panelBorder, width: 1.4),
+            border: Border.all(
+              color: selected ? accent : AuthBackground.panelBorder,
+              width: 1.4,
+            ),
           ),
           child: Column(
             children: [
@@ -127,7 +138,10 @@ class _SignupScreenState extends State<SignupScreen> {
         backgroundColor: AuthBackground.bg,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('회원가입', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        title: const Text(
+          '회원가입',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
       ),
       body: AuthBackground(
         child: SafeArea(
@@ -153,7 +167,10 @@ class _SignupScreenState extends State<SignupScreen> {
                         TextFormField(
                           controller: _nicknameController,
                           style: const TextStyle(color: Colors.white),
-                          decoration: authFieldDecoration(label: '닉네임', icon: Icons.person_outline),
+                          decoration: authFieldDecoration(
+                            label: '닉네임',
+                            icon: Icons.person_outline,
+                          ),
                           validator: (value) {
                             if (value == null || value.trim().isEmpty) {
                               return '닉네임을 입력해주세요.';
@@ -166,7 +183,10 @@ class _SignupScreenState extends State<SignupScreen> {
                           controller: _emailController,
                           style: const TextStyle(color: Colors.white),
                           keyboardType: TextInputType.emailAddress,
-                          decoration: authFieldDecoration(label: '이메일', icon: Icons.email_outlined),
+                          decoration: authFieldDecoration(
+                            label: '이메일',
+                            icon: Icons.email_outlined,
+                          ),
                           validator: (value) {
                             if (value == null || !value.contains('@')) {
                               return '올바른 이메일을 입력해주세요.';
@@ -179,7 +199,10 @@ class _SignupScreenState extends State<SignupScreen> {
                           controller: _passwordController,
                           style: const TextStyle(color: Colors.white),
                           obscureText: true,
-                          decoration: authFieldDecoration(label: '비밀번호 (6자 이상)', icon: Icons.lock_outline),
+                          decoration: authFieldDecoration(
+                            label: '비밀번호 (6자 이상)',
+                            icon: Icons.lock_outline,
+                          ),
                           validator: (value) {
                             if (value == null || value.length < 6) {
                               return '비밀번호는 6자 이상이어야 합니다.';
@@ -192,7 +215,10 @@ class _SignupScreenState extends State<SignupScreen> {
                           controller: _passwordConfirmController,
                           style: const TextStyle(color: Colors.white),
                           obscureText: true,
-                          decoration: authFieldDecoration(label: '비밀번호 확인', icon: Icons.lock_outline),
+                          decoration: authFieldDecoration(
+                            label: '비밀번호 확인',
+                            icon: Icons.lock_outline,
+                          ),
                           validator: (value) {
                             if (value != _passwordController.text) {
                               return '비밀번호가 일치하지 않습니다.';
@@ -200,11 +226,9 @@ class _SignupScreenState extends State<SignupScreen> {
                             return null;
                           },
                         ),
-
                         const SizedBox(height: 24),
                         Divider(color: AuthBackground.panelBorder),
                         const SizedBox(height: 16),
-
                         _sectionLabel('프로필 정보'),
                         const SizedBox(height: 12),
                         TextFormField(
@@ -217,13 +241,16 @@ class _SignupScreenState extends State<SignupScreen> {
                             hint: '앱에서는 20대 등으로만 표시됩니다.',
                           ),
                           validator: (value) {
-                            if (value == null || value.trim().isEmpty) return '나이를 입력해주세요.';
-                            if (int.tryParse(value.trim()) == null) return '숫자만 입력 가능합니다.';
+                            if (value == null || value.trim().isEmpty) {
+                              return '나이를 입력해주세요.';
+                            }
+                            if (int.tryParse(value.trim()) == null) {
+                              return '숫자만 입력 가능합니다.';
+                            }
                             return null;
                           },
                         ),
                         const SizedBox(height: 16),
-
                         _sectionLabel('성별'),
                         const SizedBox(height: 8),
                         Row(
@@ -234,48 +261,73 @@ class _SignupScreenState extends State<SignupScreen> {
                           ],
                         ),
                         const SizedBox(height: 16),
-
                         _sectionLabel('MBTI'),
                         const SizedBox(height: 8),
                         DropdownButtonFormField<String>(
                           dropdownColor: AuthBackground.panel,
                           style: const TextStyle(color: Colors.white),
-                          decoration: authFieldDecoration(label: 'MBTI 선택', icon: Icons.psychology_outlined),
+                          decoration: authFieldDecoration(
+                            label: 'MBTI 선택',
+                            icon: Icons.psychology_outlined,
+                          ),
                           value: _selectedMbti,
                           items: _mbtiList.map((mbti) {
-                            return DropdownMenuItem(value: mbti, child: Text(mbti));
+                            return DropdownMenuItem(
+                              value: mbti,
+                              child: Text(mbti),
+                            );
                           }).toList(),
                           onChanged: (value) {
                             setState(() {
                               _selectedMbti = value;
-                              if (_errorMessage == 'MBTI를 선택해주세요.') _errorMessage = null;
+                              if (_errorMessage == 'MBTI를 선택해주세요.') {
+                                _errorMessage = null;
+                              }
                             });
                           },
                         ),
-
+                        const SizedBox(height: 24),
+                        Divider(color: AuthBackground.panelBorder),
+                        const SizedBox(height: 16),
+                        CategoryPreferenceSelector(
+                          darkMode: true,
+                          selectedCategories: _preferredCategories,
+                          onChanged: (categories) {
+                            setState(() => _preferredCategories = categories);
+                          },
+                        ),
                         if (_errorMessage != null) ...[
                           const SizedBox(height: 16),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.redAccent.withOpacity(0.12),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Row(
                               children: [
-                                const Icon(Icons.error_outline, color: Colors.redAccent, size: 18),
+                                const Icon(
+                                  Icons.error_outline,
+                                  color: Colors.redAccent,
+                                  size: 18,
+                                ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
                                     _errorMessage!,
-                                    style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                                    style: const TextStyle(
+                                      color: Colors.redAccent,
+                                      fontSize: 13,
+                                    ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
                         ],
-
                         const SizedBox(height: 22),
                         SizedBox(
                           height: 52,
@@ -298,7 +350,13 @@ class _SignupScreenState extends State<SignupScreen> {
                                       strokeWidth: 2,
                                     ),
                                   )
-                                : const Text('회원가입', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                : const Text(
+                                    '회원가입',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
                           ),
                         ),
                       ],

@@ -23,7 +23,7 @@ dependencies:
   flutter_dotenv: ^6.0.1
   geocoding: ^3.0.0
   url_launcher: ^6.3.3
-  http: ^1.2.0
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:
@@ -36,6 +36,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    - assets/splash_android12.png
     - assets/lightning_icon.png
     - assets/app_logo.png # 🚀 [NEW] 준비하신 새 로고 이미지 경로 추가!
     - .env
