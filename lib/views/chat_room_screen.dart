@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -26,6 +28,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
   bool _showEmojiPanel = false;
   bool _isSendingMessage = false;
+  bool _isAiBusy = false;
+  BuildContext? _aiLoadingDialogContext;
+  String _participantCacheKey = '';
+  Future<List<_ChatParticipant>>? _participantFuture;
 
   // 💡 [추가] 차단한 유저들의 UID를 담아둘 리스트
   List<String> _blockedUsers = [];
@@ -171,190 +177,273 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     );
   }
 
-  Future<void> _triggerIcebreaker(BuildContext context) async {
-    showDialog(
+  void _showAiLoading(String message, {Color color = Colors.green}) {
+    showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(color: Colors.orange),
-            SizedBox(width: 20),
-            Expanded(
-              child: Text(
-                "AI 요정이 눈치를 보는 중... 💡",
-                style: TextStyle(fontWeight: FontWeight.bold),
+      builder: (dialogContext) {
+        _aiLoadingDialogContext = dialogContext;
+        return AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(color: color),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  message,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
               ),
-            ),
-          ],
-        ),
-      ),
+            ],
+          ),
+        );
+      },
     );
+  }
 
+  void _closeAiLoading() {
+    final dialogContext = _aiLoadingDialogContext;
+    _aiLoadingDialogContext = null;
+    if (dialogContext != null && dialogContext.mounted) {
+      Navigator.of(dialogContext).pop();
+    }
+  }
+
+  String _friendlyAiError(Object error, String featureName) {
+    if (error is TimeoutException) {
+      return '$featureName 응답이 12초 안에 도착하지 않아 중단했습니다. 네트워크나 Gemini API 사용량을 확인한 뒤 다시 시도해 주세요.';
+    }
+    final raw = error.toString();
+    if (raw.contains('429') || raw.toLowerCase().contains('quota')) {
+      return 'Gemini API 사용량 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.';
+    }
+    if (raw.contains('403') || raw.contains('401')) {
+      return 'Gemini API 인증에 실패했습니다. .env의 API 키와 사용 권한을 확인해 주세요.';
+    }
+    if (raw.contains('404') || raw.toLowerCase().contains('not found')) {
+      return '요청한 Gemini 모델을 찾을 수 없습니다. 모델 설정을 확인해 주세요.';
+    }
+    return '$featureName 기능을 실행하지 못했습니다.\n원인: $raw';
+  }
+
+  Future<void> _triggerIcebreaker(BuildContext context) async {
+    if (_isAiBusy) return;
+    final apiKey = dotenv.env['GEMINI_API_KEY']?.trim() ?? '';
+    if (apiKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Gemini API 키를 찾을 수 없습니다. .env 파일을 확인해 주세요.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isAiBusy = true);
+    bool loadingVisible = false;
     try {
-      final meetingDoc = await FirebaseFirestore.instance
+      _showAiLoading('AI 요정이 첫 대화 질문을 만들고 있어요...', color: Colors.orange);
+      loadingVisible = true;
+
+      final meetingSnapshot = await FirebaseFirestore.instance
           .collection('meetings')
           .doc(widget.roomId)
-          .get();
-      final meetingData = meetingDoc.data();
+          .get()
+          .timeout(const Duration(seconds: 6));
+      final meetingData = meetingSnapshot.data();
       if (meetingData == null) {
-        if (context.mounted) {
-          Navigator.pop(context);
-          _showCustomDialog(context, "오류", "모임 정보를 불러올 수 없습니다.");
-        }
-        return;
+        throw StateError('모임 정보를 찾을 수 없습니다.');
       }
 
-      final category = meetingData['category'] ?? '모임';
-      final title = meetingData['title'] ?? '';
-      final List<dynamic> participants = meetingData['participants'] ?? [];
+      final category = (meetingData['category'] ?? '모임').toString();
+      final title = (meetingData['title'] ?? widget.roomTitle).toString();
+      final participantValues = meetingData['participants'];
+      final participantIds = participantValues is List
+          ? participantValues
+                .map((value) => value.toString())
+                .where((value) => value.isNotEmpty)
+                .take(5)
+                .toList()
+          : <String>[];
 
-      List<String> mbtiList = [];
-      for (var uid in participants.take(5)) {
-        try {
-          final userDoc = await FirebaseFirestore.instance
+      // 참여자 프로필을 한 명씩 기다리지 않고 병렬로 읽어 대기 시간을 줄입니다.
+      final profileSnapshots = await Future.wait(
+        participantIds.map(
+          (uid) => FirebaseFirestore.instance
               .collection('users')
               .doc(uid)
-              .get();
-          final mbti =
-              (userDoc.data() as Map<String, dynamic>?)?['mbti'] ?? '비공개';
-          if (mbti != '비공개') mbtiList.add(mbti);
-        } catch (e) {
-          print("MBTI 수집 실패(무시하고 진행): $e");
-        }
-      }
+              .get()
+              .timeout(const Duration(seconds: 5)),
+        ),
+      );
+      final mbtiList = profileSnapshots
+          .map((snapshot) => (snapshot.data()?['mbti'] ?? '').toString())
+          .where((mbti) => mbti.isNotEmpty && mbti != '비공개')
+          .toList();
 
       final model = GenerativeModel(
-        model: 'gemini-3.6-flash',
-        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
+        model: 'gemini-3.5-flash-lite',
+        apiKey: apiKey,
+        generationConfig: GenerationConfig(
+          maxOutputTokens: 110,
+          temperature: 0.65,
+        ),
       );
-
       final prompt =
-          """
-      너는 동네 번개 모임 채팅방의 발랄한 'AI 요정'이야.
-      채팅방에 정적이 흘러서 분위기를 띄워야 해! 참여자들의 MBTI 조합과 모임 주제를 보고, 다같이 대답하기 좋은 재미있는 첫 질문(아이스브레이킹)을 딱 1개만 던져줘.
-      - 모임 주제: [$category] $title
-      - 참여자 MBTI 조합: ${mbtiList.isNotEmpty ? mbtiList.join(', ') : '정보 없음'}
-      
-      규칙:
-      1. 첫 문장은 "안녕하세요! AI 요정입니다 🧚✨" 로 고정해.
-      2. MBTI 조합을 재치있게 언급해.
-      3. 절대 3문장을 넘기지 말고 친근한 반말로 해줘.
-      """;
+          '''
+동네 번개 모임 채팅방의 친근한 AI 요정이야.
+모임: $category / $title
+참여자 MBTI: ${mbtiList.isEmpty ? '정보 없음' : mbtiList.join(', ')}
+대화 시작용 질문 1개를 한국어 반말로 짧고 자연스럽게 만들어.
+첫 문장은 "안녕하세요! AI 요정입니다."로 시작하고 전체 2문장 이내로 작성해.
+''';
 
       final response = await model
           .generateContent([Content.text(prompt)])
-          .timeout(const Duration(seconds: 25));
-
-      final icebreakerText = response.text ?? '여러분, 오늘 저녁 메뉴로 뭐 드실 건가요? 😊';
-
-      try {
-        final roomRef = FirebaseFirestore.instance
-            .collection('chatRooms')
-            .doc(widget.roomId);
-
-        await roomRef.collection('messages').add({
-          'text': icebreakerText,
-          'senderId': 'ai_fairy',
-          'senderName': '🧚 AI 요정',
-          'createdAt': FieldValue.serverTimestamp(),
-          'type': 'text',
-        });
-
-        await roomRef.update({
-          'lastMessage': icebreakerText,
-          'lastMessageAt': FieldValue.serverTimestamp(),
-          'lastSenderId': 'ai_fairy',
-        });
-      } catch (dbError) {
-        debugPrint('[AI 아이스브레이킹 저장 실패] $dbError');
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('AI 질문을 채팅방에 등록하지 못했습니다.\n$dbError'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
+          .timeout(const Duration(seconds: 12));
+      final icebreakerText = response.text?.trim() ?? '';
+      if (icebreakerText.isEmpty) {
+        throw const FormatException('AI가 질문을 생성하지 못했습니다. 다시 시도해 주세요.');
       }
 
-      if (context.mounted) Navigator.pop(context);
-    } catch (e) {
-      if (context.mounted) {
-        Navigator.pop(context);
-        _showCustomDialog(context, "에러", "요정이 멈춘 이유:\n$e");
+      final roomRef = FirebaseFirestore.instance
+          .collection('chatRooms')
+          .doc(widget.roomId);
+      final messageRef = roomRef.collection('messages').doc();
+      final batch = FirebaseFirestore.instance.batch();
+      batch.set(messageRef, {
+        'text': icebreakerText,
+        'senderId': 'ai_fairy',
+        'senderName': 'AI 요정',
+        'createdAt': FieldValue.serverTimestamp(),
+        'type': 'text',
+      });
+      batch.update(roomRef, {
+        'lastMessage': icebreakerText,
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'lastSenderId': 'ai_fairy',
+      });
+      // 메시지와 채팅방 마지막 메시지 정보를 한 번에 저장해 네트워크 왕복을 줄입니다.
+      await batch.commit().timeout(const Duration(seconds: 6));
+
+      if (loadingVisible && mounted) {
+        _closeAiLoading();
+        loadingVisible = false;
       }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('AI 요정의 질문을 채팅방에 등록했습니다.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('[AI 아이스브레이킹 실패] $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (loadingVisible && mounted) {
+        _closeAiLoading();
+        loadingVisible = false;
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_friendlyAiError(error, 'AI 아이스브레이킹')),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } finally {
+      if (loadingVisible && mounted) _closeAiLoading();
+      if (mounted) setState(() => _isAiBusy = false);
     }
   }
 
   Future<void> _showChatSummary(BuildContext context) async {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(color: Colors.purple),
-            SizedBox(width: 20),
-            Expanded(
-              child: Text(
-                "AI가 대화 내용을 요약 중입니다... 🪄",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
+    if (_isAiBusy) return;
+    final apiKey = dotenv.env['GEMINI_API_KEY']?.trim() ?? '';
+    if (apiKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Gemini API 키를 찾을 수 없습니다. .env 파일을 확인해 주세요.'),
+          backgroundColor: Colors.red,
         ),
-      ),
-    );
+      );
+      return;
+    }
 
+    setState(() => _isAiBusy = true);
+    bool loadingVisible = false;
     try {
+      _showAiLoading('최근 대화에서 핵심 내용만 정리하고 있어요...', color: Colors.purple);
+      loadingVisible = true;
+
+      // 요약 입력을 최근 20개로 줄이고 메시지별 길이를 제한해 응답 시간을 단축합니다.
       final querySnapshot = await FirebaseFirestore.instance
           .collection('chatRooms')
           .doc(widget.roomId)
           .collection('messages')
           .orderBy('createdAt', descending: true)
-          .limit(30)
-          .get();
+          .limit(20)
+          .get()
+          .timeout(const Duration(seconds: 6));
 
       if (querySnapshot.docs.isEmpty) {
-        Navigator.pop(context);
-        _showCustomDialog(context, "알림", "아직 나누어진 대화가 없어요! 첫 대화를 시작해 보세요 💬");
+        if (loadingVisible && mounted) {
+          _closeAiLoading();
+          loadingVisible = false;
+        }
+        if (mounted) {
+          _showCustomDialog(context, '알림', '아직 나누어진 대화가 없어요. 첫 대화를 시작해 보세요!');
+        }
         return;
       }
 
-      StringBuffer chatBuffer = StringBuffer();
-      for (var doc in querySnapshot.docs.reversed) {
+      final chatLines = <String>[];
+      for (final doc in querySnapshot.docs.reversed) {
         final data = doc.data();
-        final sender = data['senderName'] ?? '익명';
-        final message = data['text'] ?? '';
-        chatBuffer.writeln('$sender: $message');
+        final sender = (data['senderName'] ?? '익명').toString();
+        var message = (data['text'] ?? '')
+            .toString()
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        if (message.length > 160) message = '${message.substring(0, 160)}…';
+        if (message.isNotEmpty) chatLines.add('$sender: $message');
       }
 
       final model = GenerativeModel(
-        model: 'gemini-3.6-flash',
-        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
+        model: 'gemini-3.5-flash-lite',
+        apiKey: apiKey,
+        generationConfig: GenerationConfig(
+          maxOutputTokens: 220,
+          temperature: 0.2,
+        ),
       );
-
       final prompt =
-          """
-      너는 번개 모임 채팅방의 센스 있는 AI 매니저야.
-      아래의 최근 채팅 내용을 바탕으로, 늦게 들어온 참여자를 위해 핵심 내용을 3가지로 압축해서 요약해 줘.
-      - 말투는 친근하고 유쾌하게 (~요, ~임!)
-      - 마크다운이나 특수문자 과도한 사용 금지. 오직 텍스트 위주로 깔끔하게.
-      
-      [채팅 내용]
-      ${chatBuffer.toString()}
-      """;
+          '''
+아래 동네 모임 채팅을 늦게 참여한 사람을 위해 요약해.
+중요한 내용 3가지만 한국어로 간결하게 정리해. 시간, 장소, 준비물, 약속이 있으면 우선 포함해.
+불필요한 인사와 반복은 제외하고, 대화에 없는 정보는 추측하지 마.
+[최근 채팅]
+${chatLines.join('\n')}
+''';
+      final response = await model
+          .generateContent([Content.text(prompt)])
+          .timeout(const Duration(seconds: 12));
+      final summaryText = response.text?.trim() ?? '';
+      if (summaryText.isEmpty) {
+        throw const FormatException('AI가 요약을 생성하지 못했습니다. 다시 시도해 주세요.');
+      }
 
-      final response = await model.generateContent([Content.text(prompt)]);
-      final summaryText = response.text ?? '요약을 생성하지 못했어요 🥲';
-
-      if (!context.mounted) return;
-      Navigator.pop(context);
-
-      showDialog(
+      if (loadingVisible && mounted) {
+        _closeAiLoading();
+        loadingVisible = false;
+      }
+      if (!mounted) return;
+      showDialog<void>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
           ),
@@ -362,18 +451,22 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
             children: [
               Icon(Icons.auto_awesome, color: Colors.purple),
               SizedBox(width: 8),
-              Text(
-                "AI 늦참 요약 봇",
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              Expanded(
+                child: Text(
+                  'AI 늦참 요약 봇',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
               ),
             ],
           ),
-          content: Text(
-            summaryText,
-            style: const TextStyle(
-              fontSize: 15,
-              height: 1.5,
-              color: Colors.black87,
+          content: SingleChildScrollView(
+            child: Text(
+              summaryText,
+              style: const TextStyle(
+                fontSize: 15,
+                height: 1.5,
+                color: Colors.black87,
+              ),
             ),
           ),
           actions: [
@@ -382,16 +475,31 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                 backgroundColor: Colors.purple,
                 foregroundColor: Colors.white,
               ),
-              onPressed: () => Navigator.pop(context),
-              child: const Text("확인 완료! 👍"),
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('확인'),
             ),
           ],
         ),
       );
-    } catch (e) {
-      if (!context.mounted) return;
-      Navigator.pop(context);
-      _showCustomDialog(context, "에러", "요약을 불러오는 데 실패했습니다: $e");
+    } catch (error, stackTrace) {
+      debugPrint('[AI 채팅 요약 실패] $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (loadingVisible && mounted) {
+        _closeAiLoading();
+        loadingVisible = false;
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_friendlyAiError(error, 'AI 채팅 요약')),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } finally {
+      if (loadingVisible && mounted) _closeAiLoading();
+      if (mounted) setState(() => _isAiBusy = false);
     }
   }
 
@@ -673,317 +781,583 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        title: Text(
-          widget.roomTitle,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: Colors.green,
-        foregroundColor: Colors.white,
-        elevation: 1,
-        actions: [
-          IconButton(
-            icon: const Icon(
-              Icons.lightbulb_outline,
-              color: Colors.yellowAccent,
-            ),
-            tooltip: 'AI 아이스브레이킹',
-            onPressed: () => _triggerIcebreaker(context),
-          ),
-          IconButton(
-            icon: const Icon(Icons.auto_awesome),
-            tooltip: 'AI 채팅 요약',
-            onPressed: () => _showChatSummary(context),
-          ),
-          IconButton(
-            icon: const Icon(Icons.exit_to_app),
-            tooltip: '나가기',
-            onPressed: _showExitDialog,
-          ),
-        ],
+  Future<List<_ChatParticipant>> _fetchChatParticipants(
+    List<String> participantIds,
+    String creatorId,
+  ) async {
+    final snapshots = await Future.wait(
+      participantIds.map(
+        (uid) => FirebaseFirestore.instance.collection('users').doc(uid).get(),
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _chatService.messagesStream(widget.roomId),
-              builder: (context, snapshot) {
-                if (snapshot.hasError)
-                  return Center(child: Text('오류: ${snapshot.error}'));
-                if (!snapshot.hasData)
-                  return const Center(child: CircularProgressIndicator());
+    );
+    return List<_ChatParticipant>.generate(participantIds.length, (index) {
+      final uid = participantIds[index];
+      final data = snapshots[index].data() ?? <String, dynamic>{};
+      return _ChatParticipant(uid: uid, data: data, isHost: uid == creatorId);
+    });
+  }
 
-                final messages = snapshot.data!.docs;
-                if (messages.isEmpty) {
-                  return const Center(
-                    child: Text(
-                      '첫 메시지를 보내보세요!',
-                      style: TextStyle(color: Colors.black54),
-                    ),
-                  );
-                }
-
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _markAsReadSafely();
-                });
-
-                return ListView.builder(
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 16,
-                  ),
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    final data = messages[index].data();
-                    final isMe = data['senderId'] == uid;
-                    final senderId = data['senderId'] ?? '';
-                    final text = data['text'] ?? '';
-                    final senderName = data['senderName'] ?? '익명';
-                    final type = data['type'] ?? 'text';
-                    final isAiFairy = senderId == 'ai_fairy';
-
-                    // 💡 [핵심 로직] 내가 차단한 유저의 메시지라면 UI에서 렌더링하지 않음 (숨김 처리)
-                    if (_blockedUsers.contains(senderId)) {
-                      return const SizedBox.shrink();
-                    }
-
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 20),
-                      child: Row(
-                        mainAxisAlignment: isMe
-                            ? MainAxisAlignment.end
-                            : MainAxisAlignment.start,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (!isMe)
-                            _buildAvatar(senderId, senderName, isAiFairy),
-                          if (!isMe) const SizedBox(width: 8),
-
-                          Flexible(
-                            child: Column(
-                              crossAxisAlignment: isMe
-                                  ? CrossAxisAlignment.end
-                                  : CrossAxisAlignment.start,
-                              children: [
-                                if (!isMe)
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      bottom: 4,
-                                      left: 4,
-                                    ),
-                                    child: Text(
-                                      senderName,
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.bold,
-                                        color: isAiFairy
-                                            ? Colors.orange[800]
-                                            : Colors.black54,
-                                      ),
-                                    ),
-                                  ),
-
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 12,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: isMe
-                                        ? Colors.green
-                                        : (isAiFairy
-                                              ? Colors.orange[50]
-                                              : Colors.white),
-                                    borderRadius: BorderRadius.only(
-                                      topLeft: const Radius.circular(20),
-                                      topRight: const Radius.circular(20),
-                                      bottomLeft: Radius.circular(
-                                        isMe ? 20 : 4,
-                                      ),
-                                      bottomRight: Radius.circular(
-                                        isMe ? 4 : 20,
-                                      ),
-                                    ),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 5,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ],
-                                    border: isAiFairy
-                                        ? Border.all(
-                                            color: Colors.orange[300]!,
-                                            width: 1,
-                                          )
-                                        : null,
-                                  ),
-                                  child: Text(
-                                    text,
-                                    style: TextStyle(
-                                      color: isMe
-                                          ? Colors.white
-                                          : Colors.black87,
-                                      fontSize: type == 'emoji' ? 28 : 15,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-                          if (isMe) const SizedBox(width: 8),
-                          if (isMe) _buildAvatar(senderId, senderName, false),
-                        ],
-                      ),
-                    );
-                  },
-                );
-              },
+  Widget _buildParticipantsTab() {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('meetings')
+          .doc(widget.roomId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+            child: Text(
+              '참여자 정보를 불러오지 못했습니다.\n${snapshot.error}',
+              textAlign: TextAlign.center,
             ),
-          ),
+          );
+        }
+        if (!snapshot.hasData) {
+          return const Center(
+            child: CircularProgressIndicator(color: Colors.green),
+          );
+        }
+        final meetingData = snapshot.data!.data();
+        if (meetingData == null) {
+          return const Center(child: Text('모임 정보를 찾을 수 없습니다.'));
+        }
 
-          if (_showEmojiPanel)
-            Container(
-              height: 96,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              color: Colors.grey[50],
-              child: GridView.count(
-                crossAxisCount: 7,
-                childAspectRatio: 1.2,
-                children: _emojis.map((emoji) {
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () async {
-                      _messageController.text = emoji;
-                      await _send(type: 'emoji');
-                    },
-                    child: Center(
-                      child: Text(emoji, style: const TextStyle(fontSize: 26)),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
+        final creatorId = (meetingData['creatorId'] ?? '').toString();
+        final rawParticipants = meetingData['participants'];
+        final participantIds = rawParticipants is List
+            ? rawParticipants
+                  .map((value) => value.toString())
+                  .where((uid) => uid.isNotEmpty)
+                  .toSet()
+                  .toList()
+            : <String>[];
+        if (creatorId.isNotEmpty && !participantIds.contains(creatorId)) {
+          participantIds.insert(0, creatorId);
+        }
+        final cacheKey = '${creatorId}|${participantIds.join(',')}';
+        if (_participantFuture == null || _participantCacheKey != cacheKey) {
+          _participantCacheKey = cacheKey;
+          _participantFuture = _fetchChatParticipants(
+            participantIds,
+            creatorId,
+          );
+        }
 
-          StreamBuilder<DocumentSnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('meetings')
-                .doc(widget.roomId)
-                .snapshots(),
-            builder: (context, snapshot) {
-              bool isExpired = false;
-              if (snapshot.hasData && snapshot.data!.exists) {
-                final data = snapshot.data!.data() as Map<String, dynamic>?;
-                if (data != null && data['deadline'] != null) {
-                  final deadline = (data['deadline'] as Timestamp).toDate();
-                  if (DateTime.now().isAfter(deadline)) {
-                    isExpired = true;
-                  }
-                }
-              }
-
-              if (isExpired) {
-                return SafeArea(
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 20),
-                    color: Colors.grey[200],
-                    child: const Text(
-                      '종료된 번개의 채팅방입니다. 더 이상 메시지를 보낼 수 없습니다.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.black54,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ),
-                );
-              }
-
-              return SafeArea(
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+        return FutureBuilder<List<_ChatParticipant>>(
+          future: _participantFuture,
+          builder: (context, membersSnapshot) {
+            if (membersSnapshot.hasError) {
+              return Center(
+                child: Text(
+                  '회원 정보를 불러오지 못했습니다.\n${membersSnapshot.error}',
+                  textAlign: TextAlign.center,
+                ),
+              );
+            }
+            if (!membersSnapshot.hasData) {
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.green),
+              );
+            }
+            final members = membersSnapshot.data!;
+            final currentCount =
+                (meetingData['currentParticipants'] as num?)?.toInt() ??
+                members.length;
+            final maxCount =
+                (meetingData['maxParticipants'] as num?)?.toInt() ?? 0;
+            return Column(
+              children: [
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 10,
-                        offset: const Offset(0, -2),
-                      ),
-                    ],
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: Row(
                     children: [
-                      IconButton(
-                        icon: Icon(
-                          _showEmojiPanel
-                              ? Icons.keyboard
-                              : Icons.emoji_emotions_outlined,
-                        ),
+                      const Icon(
+                        Icons.groups_rounded,
                         color: Colors.green,
-                        onPressed: () {
-                          setState(() {
-                            _showEmojiPanel = !_showEmojiPanel;
-                          });
-                        },
+                        size: 28,
                       ),
+                      const SizedBox(width: 10),
                       Expanded(
-                        child: TextField(
-                          controller: _messageController,
-                          minLines: 1,
-                          maxLines: 4,
-                          decoration: InputDecoration(
-                            hintText: '메시지를 입력하세요',
-                            filled: true,
-                            fillColor: Colors.grey[100],
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 12,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '모임 참여자',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
                             ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(24),
-                              borderSide: BorderSide.none,
+                            const SizedBox(height: 3),
+                            Text(
+                              maxCount > 0
+                                  ? '$currentCount / $maxCount명 참여 중'
+                                  : '$currentCount명 참여 중',
+                              style: const TextStyle(
+                                color: Colors.black54,
+                                fontSize: 13,
+                              ),
                             ),
-                          ),
-                          onTap: () {
-                            if (_showEmojiPanel) {
-                              setState(() => _showEmojiPanel = false);
-                            }
-                          },
+                          ],
                         ),
                       ),
                       IconButton(
-                        icon: _isSendingMessage
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.send),
-                        color: Colors.green,
-                        onPressed: _isSendingMessage ? null : _send,
+                        tooltip: '참여자 새로고침',
+                        onPressed: () => setState(() {
+                          _participantCacheKey = '';
+                          _participantFuture = null;
+                        }),
+                        icon: const Icon(Icons.refresh, color: Colors.green),
                       ),
                     ],
                   ),
                 ),
+                Expanded(
+                  child: members.isEmpty
+                      ? const Center(child: Text('아직 참여자가 없습니다.'))
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+                          itemCount: members.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final member = members[index];
+                            final data = member.data;
+                            final name =
+                                (data['displayName'] ??
+                                        data['nickname'] ??
+                                        '이름 없음')
+                                    .toString();
+                            final photoUrl = (data['photoUrl'] ?? '')
+                                .toString();
+                            final mbti = (data['mbti'] ?? '비공개').toString();
+                            final ageGroup = (data['ageGroup'] ?? '비공개')
+                                .toString();
+                            final gender = (data['gender'] ?? '비공개').toString();
+                            final mannerVolt = (data['mannerVolt'] ?? 0)
+                                .toString();
+                            return Card(
+                              elevation: 1,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: ListTile(
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 6,
+                                ),
+                                leading: CircleAvatar(
+                                  radius: 24,
+                                  backgroundColor: Colors.green.shade50,
+                                  backgroundImage: photoUrl.isNotEmpty
+                                      ? NetworkImage(photoUrl)
+                                      : null,
+                                  child: photoUrl.isEmpty
+                                      ? const Icon(
+                                          Icons.person,
+                                          color: Colors.green,
+                                        )
+                                      : null,
+                                ),
+                                title: Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        name,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                    if (member.isHost) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 7,
+                                          vertical: 3,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange.shade50,
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                        ),
+                                        child: const Text(
+                                          '방장',
+                                          style: TextStyle(
+                                            color: Colors.deepOrange,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 5),
+                                  child: Text(
+                                    'MBTI $mbti  ·  $ageGroup  ·  $gender\n매너 볼트 $mannerVolt V',
+                                    style: const TextStyle(
+                                      height: 1.5,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                                isThreeLine: true,
+                                trailing: const Icon(
+                                  Icons.chevron_right,
+                                  color: Colors.grey,
+                                ),
+                                onTap: () => _showUserProfileDialog(member.uid),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildChatTab(String? uid) {
+    return Column(
+      children: [
+        Expanded(
+          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _chatService.messagesStream(widget.roomId),
+            builder: (context, snapshot) {
+              if (snapshot.hasError)
+                return Center(
+                  child: Text('채팅을 불러오지 못했습니다.\n${snapshot.error}'),
+                );
+              if (!snapshot.hasData)
+                return const Center(child: CircularProgressIndicator());
+              final messages = snapshot.data!.docs;
+              if (messages.isEmpty) {
+                return const Center(
+                  child: Text(
+                    '첫 메시지를 보내보세요!',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                );
+              }
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => _markAsReadSafely(),
+              );
+              return ListView.builder(
+                reverse: true,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 16,
+                ),
+                itemCount: messages.length,
+                itemBuilder: (context, index) {
+                  final data = messages[index].data();
+                  final senderId = (data['senderId'] ?? '').toString();
+                  final isMe = senderId == uid;
+                  final text = (data['text'] ?? '').toString();
+                  final senderName = (data['senderName'] ?? '익명').toString();
+                  final type = (data['type'] ?? 'text').toString();
+                  final isAiFairy = senderId == 'ai_fairy';
+                  if (_blockedUsers.contains(senderId))
+                    return const SizedBox.shrink();
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 20),
+                    child: Row(
+                      mainAxisAlignment: isMe
+                          ? MainAxisAlignment.end
+                          : MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (!isMe)
+                          _buildAvatar(senderId, senderName, isAiFairy),
+                        if (!isMe) const SizedBox(width: 8),
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: isMe
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
+                            children: [
+                              if (!isMe)
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    bottom: 4,
+                                    left: 4,
+                                  ),
+                                  child: Text(
+                                    senderName,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      color: isAiFairy
+                                          ? Colors.orange[800]
+                                          : Colors.black54,
+                                    ),
+                                  ),
+                                ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isMe
+                                      ? Colors.green
+                                      : (isAiFairy
+                                            ? Colors.orange[50]
+                                            : Colors.white),
+                                  borderRadius: BorderRadius.only(
+                                    topLeft: const Radius.circular(20),
+                                    topRight: const Radius.circular(20),
+                                    bottomLeft: Radius.circular(isMe ? 20 : 4),
+                                    bottomRight: Radius.circular(isMe ? 4 : 20),
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.05),
+                                      blurRadius: 5,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                  border: isAiFairy
+                                      ? Border.all(
+                                          color: Colors.orange[300]!,
+                                          width: 1,
+                                        )
+                                      : null,
+                                ),
+                                child: Text(
+                                  text,
+                                  style: TextStyle(
+                                    color: isMe ? Colors.white : Colors.black87,
+                                    fontSize: type == 'emoji' ? 28 : 15,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (isMe) const SizedBox(width: 8),
+                        if (isMe) _buildAvatar(senderId, senderName, false),
+                      ],
+                    ),
+                  );
+                },
               );
             },
           ),
-        ],
+        ),
+        if (_showEmojiPanel)
+          Container(
+            height: 96,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            color: Colors.grey[50],
+            child: GridView.count(
+              crossAxisCount: 7,
+              childAspectRatio: 1.2,
+              children: _emojis
+                  .map(
+                    (emoji) => InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () async {
+                        _messageController.text = emoji;
+                        await _send(type: 'emoji');
+                      },
+                      child: Center(
+                        child: Text(
+                          emoji,
+                          style: const TextStyle(fontSize: 26),
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance
+              .collection('meetings')
+              .doc(widget.roomId)
+              .snapshots(),
+          builder: (context, snapshot) {
+            bool isExpired = false;
+            final data = snapshot.data?.data();
+            final deadlineValue = data?['deadline'];
+            DateTime? deadline;
+            if (deadlineValue is Timestamp) deadline = deadlineValue.toDate();
+            if (deadlineValue is DateTime) deadline = deadlineValue;
+            if (deadline != null && !deadline.isAfter(DateTime.now()))
+              isExpired = true;
+            if (isExpired) {
+              return SafeArea(
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  color: Colors.grey[200],
+                  child: const Text(
+                    '종료된 번개의 채팅방입니다. 더 이상 메시지를 보낼 수 없습니다.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.black54,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              );
+            }
+            return SafeArea(
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _showEmojiPanel
+                            ? Icons.keyboard
+                            : Icons.emoji_emotions_outlined,
+                      ),
+                      color: Colors.green,
+                      onPressed: () =>
+                          setState(() => _showEmojiPanel = !_showEmojiPanel),
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        minLines: 1,
+                        maxLines: 4,
+                        decoration: InputDecoration(
+                          hintText: '메시지를 입력하세요',
+                          filled: true,
+                          fillColor: Colors.grey[100],
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                        onTap: () {
+                          if (_showEmojiPanel)
+                            setState(() => _showEmojiPanel = false);
+                        },
+                      ),
+                    ),
+                    IconButton(
+                      icon: _isSendingMessage
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send),
+                      color: Colors.green,
+                      onPressed: _isSendingMessage ? null : _send,
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: Colors.grey[50],
+        appBar: AppBar(
+          title: Text(
+            widget.roomTitle,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: Colors.green,
+          foregroundColor: Colors.white,
+          elevation: 1,
+          bottom: const TabBar(
+            indicatorColor: Colors.white,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            tabs: [
+              Tab(icon: Icon(Icons.chat_bubble_outline), text: '채팅'),
+              Tab(icon: Icon(Icons.people_alt_outlined), text: '참여자 정보'),
+            ],
+          ),
+          actions: [
+            IconButton(
+              icon: _isAiBusy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.lightbulb_outline,
+                      color: Colors.yellowAccent,
+                    ),
+              tooltip: 'AI 아이스브레이킹',
+              onPressed: _isAiBusy ? null : () => _triggerIcebreaker(context),
+            ),
+            IconButton(
+              icon: const Icon(Icons.auto_awesome),
+              tooltip: 'AI 채팅 요약',
+              onPressed: _isAiBusy ? null : () => _showChatSummary(context),
+            ),
+            IconButton(
+              icon: const Icon(Icons.exit_to_app),
+              tooltip: '나가기',
+              onPressed: _showExitDialog,
+            ),
+          ],
+        ),
+        body: TabBarView(
+          children: [_buildChatTab(uid), _buildParticipantsTab()],
+        ),
       ),
     );
   }
+}
+
+class _ChatParticipant {
+  final String uid;
+  final Map<String, dynamic> data;
+  final bool isHost;
+
+  const _ChatParticipant({
+    required this.uid,
+    required this.data,
+    required this.isHost,
+  });
 }

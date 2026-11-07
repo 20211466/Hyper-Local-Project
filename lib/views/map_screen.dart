@@ -63,6 +63,8 @@ class MapScreenState extends State<MapScreen> {
   final List<String> _categories = ['운동', '식사', '공부', '게임', '산책', '기타'];
 
   bool _isAiLoading = false;
+  String? _aiPolishFeedback;
+  bool _aiPolishFeedbackIsError = false;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
 
@@ -534,81 +536,169 @@ class MapScreenState extends State<MapScreen> {
     }
   }
 
-  Future<void> _polishTextWithAI(Function setSheetState) async {
-    if (_titleController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('💡 AI 가이드: 먼저 제목이나 키워드를 간략히 적어주세요!')),
+  Future<void> _polishTextWithAI(StateSetter setSheetState) async {
+    if (_isAiLoading) return;
+
+    // BottomSheet가 닫힌 뒤 비동기 응답이 도착해도 setState 예외가
+    // 발생하지 않도록 화면 갱신을 안전하게 처리합니다.
+    void updateSheet(VoidCallback callback) {
+      if (!mounted) return;
+      try {
+        setSheetState(callback);
+      } catch (e) {
+        debugPrint('[AI 모집글] BottomSheet가 닫혀 화면 갱신을 건너뜁니다: $e');
+      }
+    }
+
+    void showFeedback(String message, {required bool isError}) {
+      updateSheet(() {
+        _aiPolishFeedback = message;
+        _aiPolishFeedbackIsError = isError;
+        _isAiLoading = false;
+      });
+
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: isError
+              ? Colors.red.shade700
+              : Colors.green.shade700,
+          duration: Duration(seconds: isError ? 6 : 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
+    final inputTitle = _titleController.text.trim();
+    final inputNote = _noteController.text.trim();
+
+    if (inputTitle.isEmpty) {
+      showFeedback('제목이나 핵심 키워드를 먼저 입력해 주세요.', isError: true);
+      return;
+    }
+
+    final apiKey = dotenv.env['GEMINI_API_KEY']?.trim() ?? '';
+    if (apiKey.isEmpty) {
+      showFeedback(
+        'Gemini API 키를 찾을 수 없습니다. 프로젝트의 .env 파일에 GEMINI_API_KEY가 설정되어 있는지 확인해 주세요.',
+        isError: true,
       );
       return;
     }
 
-    setSheetState(() => _isAiLoading = true);
+    updateSheet(() {
+      _isAiLoading = true;
+      _aiPolishFeedback = null;
+      _aiPolishFeedbackIsError = false;
+    });
 
     try {
       final model = GenerativeModel(
-        model: 'gemini-3.6-flash',
-        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
+        model: 'gemini-3.5-flash-lite',
+        apiKey: apiKey,
+        generationConfig: GenerationConfig(
+          responseMimeType: 'application/json',
+          maxOutputTokens: 220,
+          temperature: 0.25,
+        ),
       );
 
       final prompt =
-          """
-      너는 동네 기반 번개 모임 앱의 친절한 AI 매니저야.
-      [카테고리] : $_selectedCategory
-      [사용자 입력] : ${_titleController.text}${_noteController.text}
-      
-      규칙:
-      1. [중요] 시스템 폰트 오류가 발생하므로 이모지(이모티콘)나 특수기호는 절대 사용하지 말고, 오직 한글과 영문 텍스트로만 매력적인 제목과 상세 설명을 작성해.
-      2. 마크다운(` ```json ` 등)이나 부가 설명, 인삿말은 절대 금지. 오직 순수한 JSON 객체 하나만 반환해.
-      3. 반드시 아래의 JSON Key 포맷을 정확히 지켜.
-      {"title": "여기에 제목", "description": "여기에 설명"}
-      """;
+          '''
+동네 번개 모임 모집글을 간결하고 자연스럽게 다듬어 JSON으로만 반환해.
+카테고리: $_selectedCategory
+제목/키워드: $inputTitle
+설명: $inputNote
+조건: 제목 30자 이내, 설명은 핵심 정보가 담긴 1~2문장, 100자 이내. 사실을 새로 만들지 말고 입력 내용을 유지해. 이모지와 마크다운 금지.
+출력 형식: {"title":"제목","description":"설명"}
+''';
 
       final response = await model
           .generateContent([Content.text(prompt)])
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 15));
 
-      final responseText = response.text;
-      if (responseText != null) {
-        String cleanJson = responseText.trim();
-        if (cleanJson.startsWith('```json'))
-          cleanJson = cleanJson.replaceFirst('```json', '');
-        if (cleanJson.startsWith('```'))
-          cleanJson = cleanJson.replaceFirst('```', '');
-        if (cleanJson.endsWith('```'))
-          cleanJson = cleanJson.substring(0, cleanJson.length - 3);
-        cleanJson = cleanJson.trim();
-
-        final Map<String, dynamic> parsedData = jsonDecode(cleanJson);
-
-        if (parsedData.containsKey('title') &&
-            parsedData.containsKey('description')) {
-          _titleController.text = parsedData['title'];
-          _noteController.text = parsedData['description'];
-        } else {
-          throw const FormatException('JSON Key 불일치');
-        }
+      var responseText = response.text?.trim() ?? '';
+      if (responseText.isEmpty) {
+        throw const FormatException(
+          'AI가 빈 응답을 반환했습니다. 키워드를 조금 더 구체적으로 입력한 뒤 다시 시도해 주세요.',
+        );
       }
+
+      final jsonStart = responseText.indexOf('{');
+      final jsonEnd = responseText.lastIndexOf('}');
+      if (jsonStart < 0 || jsonEnd <= jsonStart) {
+        throw const FormatException('AI 응답을 제목과 설명으로 변환하지 못했습니다. 다시 시도해 주세요.');
+      }
+      responseText = responseText.substring(jsonStart, jsonEnd + 1);
+
+      final dynamic decoded;
+      try {
+        decoded = jsonDecode(responseText);
+      } on FormatException {
+        throw const FormatException('AI 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.');
+      }
+
+      if (decoded is! Map) {
+        throw const FormatException('AI 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.');
+      }
+
+      final generatedTitle = (decoded['title'] ?? '').toString().trim();
+      final generatedDescription = (decoded['description'] ?? '')
+          .toString()
+          .trim();
+      if (generatedTitle.isEmpty || generatedDescription.isEmpty) {
+        throw const FormatException(
+          'AI가 제목 또는 설명을 완성하지 못했습니다. 입력 내용을 보완한 뒤 다시 시도해 주세요.',
+        );
+      }
+
+      _titleController.text = generatedTitle;
+      _noteController.text = generatedDescription;
+      showFeedback('AI가 모집글을 완성했습니다. 내용을 확인해 주세요.', isError: false);
     } on TimeoutException {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('⏳ AI 서버가 혼잡하여 시간이 초과되었습니다. 직접 작성해주세요!'),
-          backgroundColor: Colors.orange,
-        ),
+      showFeedback(
+        'AI 응답 시간이 초과되었습니다(15초). 인터넷 연결이나 API 사용량을 확인한 뒤 다시 시도해 주세요.',
+        isError: true,
       );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⚠️ 에러 원인: $e'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 4),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setSheetState(() => _isAiLoading = false);
+    } catch (error, stackTrace) {
+      debugPrint('[AI 모집글 작성 실패] $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      final raw = error.toString();
+      final lower = raw.toLowerCase();
+      String message;
+
+      if (raw.contains('429') ||
+          lower.contains('quota') ||
+          lower.contains('resource_exhausted')) {
+        message = 'Gemini API 사용량 한도에 도달했습니다. 잠시 기다린 후 다시 시도해 주세요.';
+      } else if (raw.contains('403') ||
+          raw.contains('401') ||
+          lower.contains('api key not valid') ||
+          lower.contains('permission_denied')) {
+        message =
+            'Gemini API 인증에 실패했습니다. .env의 GEMINI_API_KEY와 API 사용 권한을 확인해 주세요.';
+      } else if (raw.contains('404') || lower.contains('not found')) {
+        message = 'Gemini 모델을 찾을 수 없습니다. 모델 이름이나 API 지원 여부를 확인해 주세요.';
+      } else if (lower.contains('socket') ||
+          lower.contains('network') ||
+          lower.contains('failed host lookup') ||
+          lower.contains('clientexception') ||
+          lower.contains('xmlhttprequest')) {
+        message = '네트워크 연결 또는 브라우저 요청이 실패했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.';
+      } else if (error is FormatException) {
+        message = error.message;
+      } else {
+        final detail = raw.length > 180 ? '${raw.substring(0, 180)}…' : raw;
+        message = 'AI 모집글 작성에 실패했습니다. 다시 시도해 주세요.\n오류 내용: $detail';
       }
+
+      showFeedback(message, isError: true);
+    } finally {
+      updateSheet(() => _isAiLoading = false);
     }
   }
 
@@ -1419,6 +1509,8 @@ class MapScreenState extends State<MapScreen> {
 
   void _showInputSheet(LatLng pos) async {
     if (_isSheetOpen) return;
+    _aiPolishFeedback = null;
+    _aiPolishFeedbackIsError = false;
     setState(() => _isSheetOpen = true);
     await showModalBottomSheet(
       context: context,
@@ -1511,6 +1603,71 @@ class MapScreenState extends State<MapScreen> {
                     ),
                   ),
                 ),
+                if (_aiPolishFeedback != null) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _aiPolishFeedbackIsError
+                          ? Colors.red.shade50
+                          : Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _aiPolishFeedbackIsError
+                            ? Colors.red.shade200
+                            : Colors.green.shade200,
+                      ),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          _aiPolishFeedbackIsError
+                              ? Icons.error_outline
+                              : Icons.check_circle_outline,
+                          size: 19,
+                          color: _aiPolishFeedbackIsError
+                              ? Colors.red.shade700
+                              : Colors.green.shade700,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _aiPolishFeedback!,
+                            style: TextStyle(
+                              color: _aiPolishFeedbackIsError
+                                  ? Colors.red.shade900
+                                  : Colors.green.shade900,
+                              fontSize: 12,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                        if (_aiPolishFeedbackIsError) ...[
+                          const SizedBox(width: 4),
+                          TextButton(
+                            onPressed: _isAiLoading
+                                ? null
+                                : () => _polishTextWithAI(setSheetState),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text('다시 시도'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
                 TextField(
                   controller: _noteController,
                   maxLines: 3,

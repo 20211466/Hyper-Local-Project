@@ -1,103 +1,85 @@
-<!DOCTYPE html><html><head>
+<!DOCTYPE html>
+<html>
+<head>
   <base href="$FLUTTER_BASE_HREF">
-
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
-  <meta name="google-signin-client_id" content="154101026042-44deanqlktbm63g78ijqjm6cf7221q95.apps.googleusercontent.com.apps.googleusercontent.com">
-  <base href="$FLUTTER_BASE_HREF">
-  
+  <meta name="description" content="Hyper-Local Meetup - 위치 기반 동네 번개 모임 플랫폼">
+
+  <!-- Google 로그인용 웹 OAuth Client ID -->
+  <meta name="google-signin-client_id" content="154101026042-44deanqlktbm63g78ijqjm6cf7221q95.apps.googleusercontent.com">
 
   <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="hyper_local_project">
+  <meta name="apple-mobile-web-app-title" content="Hyper Local Meetup">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
-
   <link rel="icon" type="image/png" href="favicon.png">
-
-  <title>hyper_local_project</title>
   <link rel="manifest" href="manifest.json">
 
+  <title>Hyper Local Meetup</title>
+
+  <!-- Google Maps JavaScript API -->
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAvrClijLdj-qBmnFd2t4x8ubARtpBZHWE"></script>
-  
-  
-  <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport">
-  <style id="splash-screen-style">
-    html {
-      height: 100%
-    }
 
-    body {
+  <style>
+    html, body {
+      height: 100%;
+      width: 100%;
       margin: 0;
-      min-height: 100%;
-      background-color: #ffffff;
-          background-size: 100% 100%;
+      padding: 0;
+      background: #ffffff;
+      overflow: hidden;
     }
 
-    .center {
-      margin: 0;
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      -ms-transform: translate(-50%, -50%);
-      transform: translate(-50%, -50%);
+    #splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #ffffff;
     }
 
-    .contain {
-      display:block;
-      width:100%; height:100%;
+    #splash img {
+      width: 100%;
+      height: 100%;
       object-fit: contain;
     }
-
-    .stretch {
-      display:block;
-      width:100%; height:100%;
-    }
-
-    .cover {
-      display:block;
-      width:100%; height:100%;
-      object-fit: cover;
-    }
-
-    .bottom {
-      position: absolute;
-      bottom: 0;
-      left: 50%;
-      -ms-transform: translate(-50%, 0);
-      transform: translate(-50%, 0);
-    }
-
-    .bottomLeft {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-    }
-
-    .bottomRight {
-      position: absolute;
-      bottom: 0;
-      right: 0;
-    }
   </style>
-  <script id="splash-screen-script">
+
+  <script>
     function removeSplashFromWeb() {
-      document.getElementById("splash")?.remove();
-      document.getElementById("splash-branding")?.remove();
-      document.body.style.background = "transparent";
+      const splash = document.getElementById('splash');
+      if (splash) {
+        splash.remove();
+      }
+      document.body.style.background = 'transparent';
     }
+
+    // Flutter가 첫 프레임을 그리면 HTML 스플래시를 제거합니다.
+    window.addEventListener('flutter-first-frame', function () {
+      removeSplashFromWeb();
+    });
+
+    // 첫 프레임 이벤트를 받지 못하는 예외 상황에서도 화면이 영구 정지한 것처럼
+    // 보이지 않도록 Flutter 엔진 로딩 실패 여부는 브라우저 콘솔에서 확인할 수 있습니다.
+    window.addEventListener('error', function (event) {
+      console.error('[Web 초기화 오류]', event.message || event.error || event);
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+      console.error('[Web 비동기 오류]', event.reason);
+    });
   </script>
 </head>
 <body>
-  <picture id="splash">
-      <source srcset="splash/img/light-1x.png 1x, splash/img/light-2x.png 2x, splash/img/light-3x.png 3x, splash/img/light-4x.png 4x" media="(prefers-color-scheme: light)">
-      <source srcset="splash/img/dark-1x.png 1x, splash/img/dark-2x.png 2x, splash/img/dark-3x.png 3x, splash/img/dark-4x.png 4x" media="(prefers-color-scheme: dark)">
-      <img class="center" aria-hidden="true" src="splash/img/light-1x.png" alt="">
-  </picture>
-  
-  <script>
-    window.flutterWebRenderer = "html";
-  </script>
-  <script src="flutter_bootstrap.js" async=""></script>
+  <div id="splash">
+    <img src="splash/img/light-2x.png" alt="Hyper Local Meetup 로딩 중">
+  </div>
 
-</body></html>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

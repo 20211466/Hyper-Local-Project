@@ -1,6 +1,20 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+
+/// 평가 창에서 상위 모임 상세 화면으로 전달하는 평가 결과입니다.
+class MannerVoltResult {
+  final int successCount;
+  final int skippedCount;
+  final int unavailableCount;
+
+  const MannerVoltResult({
+    required this.successCount,
+    required this.skippedCount,
+    required this.unavailableCount,
+  });
+}
 
 class MannerVoltDialog extends StatefulWidget {
   final List<dynamic> participantIds;
@@ -23,84 +37,125 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
 
   Future<void> _submitRatings() async {
     final reviewerId = currentUserId;
-    if (reviewerId == null) return;
+    if (reviewerId == null || _ratings.isEmpty || _isSubmitting) return;
 
     setState(() => _isSubmitting = true);
-    
+
     try {
       final db = FirebaseFirestore.instance;
-      int successCount = 0;
-      int skippedCount = 0;
-      
-      await db.runTransaction((transaction) async {
-        Map<String, DocumentSnapshot> cooldownDocs = {};
-        for (var targetId in _ratings.keys) {
-          final logRef = db.collection('manner_logs').doc('${reviewerId}_$targetId');
+
+      // 점수 변경과 평가 로그 저장을 하나의 트랜잭션으로 처리합니다.
+      // 중간에 하나라도 실패하면 점수와 로그가 모두 롤백됩니다.
+      final result = await db.runTransaction<MannerVoltResult>((
+        transaction,
+      ) async {
+        final cooldownDocs = <String, DocumentSnapshot<Map<String, dynamic>>>{};
+        final userDocs = <String, DocumentSnapshot<Map<String, dynamic>>>{};
+
+        // Firestore 트랜잭션에서는 모든 읽기를 쓰기보다 먼저 수행합니다.
+        for (final targetId in _ratings.keys) {
+          final logRef = db
+              .collection('manner_logs')
+              .doc('${reviewerId}_$targetId');
+          final userRef = db.collection('users').doc(targetId);
+
           cooldownDocs[targetId] = await transaction.get(logRef);
+          userDocs[targetId] = await transaction.get(userRef);
         }
 
         final now = DateTime.now();
+        var successCount = 0;
+        var skippedCount = 0;
+        var unavailableCount = 0;
 
-        for (var entry in _ratings.entries) {
+        for (final entry in _ratings.entries) {
           final targetId = entry.key;
           final score = entry.value;
           final logSnap = cooldownDocs[targetId];
+          final userSnap = userDocs[targetId];
 
-          bool canRate = true; 
+          // 이미 탈퇴했거나 프로필 문서가 없는 사용자는 점수를 반영하지 않습니다.
+          if (userSnap == null || !userSnap.exists) {
+            unavailableCount++;
+            continue;
+          }
 
-          if (logSnap != null && logSnap.exists) {
-            final lastRated = (logSnap.data() as Map<String, dynamic>?)?['lastRatedAt'] as Timestamp?;
-            if (lastRated != null) {
-              final difference = now.difference(lastRated.toDate()).inDays;
-              if (difference < 7) {
-                canRate = false; 
-              }
+          var canRate = true;
+          final lastRatedValue = logSnap?.data()?['lastRatedAt'];
+          if (lastRatedValue is Timestamp) {
+            final elapsed = now.difference(lastRatedValue.toDate());
+            if (elapsed < const Duration(days: 7)) {
+              canRate = false;
             }
           }
 
-          if (canRate) {
-            final userRef = db.collection('users').doc(targetId);
-            transaction.update(userRef, {
-              'mannerVolt': FieldValue.increment(score),
-            });
+          if (!canRate) {
+            skippedCount++;
+            continue;
+          }
 
-            final logRef = db.collection('manner_logs').doc('${reviewerId}_$targetId');
-            transaction.set(logRef, {
+          // 평가 대상자의 users/{targetId}.mannerVolt에 선택 점수를 더합니다.
+          // +점수는 증가, -점수는 감소합니다.
+          transaction.update(db.collection('users').doc(targetId), {
+            'mannerVolt': FieldValue.increment(score),
+          });
+
+          // 같은 평가자-대상자 조합은 7일 동안 다시 평가할 수 없도록 기록합니다.
+          transaction.set(
+            db.collection('manner_logs').doc('${reviewerId}_$targetId'),
+            {
               'reviewerId': reviewerId,
               'targetId': targetId,
+              'meetingId': widget.meetingId,
               'lastRatedAt': FieldValue.serverTimestamp(),
-            }, SetOptions(merge: true));
+            },
+            SetOptions(merge: true),
+          );
 
-            successCount++;
-          } else {
-            skippedCount++;
-          }
+          successCount++;
         }
+
+        return MannerVoltResult(
+          successCount: successCount,
+          skippedCount: skippedCount,
+          unavailableCount: unavailableCount,
+        );
       });
 
       if (!mounted) return;
-      Navigator.of(context).pop(true); 
 
-      if (skippedCount > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('⚡ 평가 완료! (단, 7일 이내 중복 평가는 어뷰징 방지로 제외되었습니다)')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('⚡ 매너 볼트 평가가 완벽하게 반영되었습니다!')),
-        );
-      }
+      // SnackBar와 모임 상세창 닫기는 부모 화면에서 한 번에 처리합니다.
+      // 여기서는 평가 결과만 반환해, 안내문이 닫히는 창 뒤에 가려지지 않게 합니다.
+      Navigator.of(context).pop(result);
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+
+      final message = e.code == 'permission-denied'
+          ? '평가 저장 권한이 없습니다. Firebase Firestore Rules가 최신 파일로 게시되었는지 확인해주세요.'
+          : '평가 저장 중 오류가 발생했습니다. (${e.code})';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
+      );
     } catch (e) {
+      if (!mounted) return;
       setState(() => _isSubmitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('오류가 발생했습니다. 다시 시도해주세요.')),
+        SnackBar(
+          content: Text('평가 저장에 실패했습니다: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final targetIds = widget.participantIds.where((id) => id != currentUserId).toList();
+    final targetIds = widget.participantIds
+        .whereType<String>()
+        .where((id) => id.isNotEmpty && id != currentUserId)
+        .toSet()
+        .toList();
 
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -109,7 +164,7 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
         textAlign: TextAlign.center,
       ),
-      contentPadding: const EdgeInsets.fromLTRB(12, 20, 12, 0), // 좌우 패딩을 살짝 줄여서 공간 확보
+      contentPadding: const EdgeInsets.fromLTRB(12, 20, 12, 0),
       content: targetIds.isEmpty
           ? const Text('평가할 대상이 없습니다.', textAlign: TextAlign.center)
           : SizedBox(
@@ -120,33 +175,90 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
                 separatorBuilder: (_, __) => const Divider(height: 24),
                 itemBuilder: (context, index) {
                   final targetId = targetIds[index];
-                  
-                  return FutureBuilder<DocumentSnapshot>(
-                    future: FirebaseFirestore.instance.collection('users').doc(targetId).get(),
+
+                  return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                    future: FirebaseFirestore.instance
+                        .collection('users')
+                        .doc(targetId)
+                        .get(),
                     builder: (context, snapshot) {
-                      if (!snapshot.hasData) return const SizedBox(height: 50, child: Center(child: CircularProgressIndicator()));
-                      
-                      final userData = snapshot.data!.data() as Map<String, dynamic>?;
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const SizedBox(
+                          height: 50,
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      }
+
+                      if (snapshot.hasError) {
+                        return const Text('참여자 정보를 불러오지 못했습니다.');
+                      }
+
+                      final userData = snapshot.data?.data();
                       final name = userData?['displayName'] ?? '알 수 없는 유저';
                       final currentRating = _ratings[targetId];
 
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('👤 $name', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                          Text(
+                            '👤 $name',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
                           const SizedBox(height: 12),
-                          // 💡 5개의 버튼이 화면에 잘 들어가도록 Expanded와 약간의 간격(SizedBox)을 사용했습니다.
                           Row(
                             children: [
-                              Expanded(child: _buildRatingButton(targetId, -5, '🚨', '비매너', currentRating)),
+                              Expanded(
+                                child: _buildRatingButton(
+                                  targetId,
+                                  -5,
+                                  '🚨',
+                                  '비매너',
+                                  currentRating,
+                                ),
+                              ),
                               const SizedBox(width: 4),
-                              Expanded(child: _buildRatingButton(targetId, -1, '👎', '별로', currentRating)),
+                              Expanded(
+                                child: _buildRatingButton(
+                                  targetId,
+                                  -1,
+                                  '👎',
+                                  '별로',
+                                  currentRating,
+                                ),
+                              ),
                               const SizedBox(width: 4),
-                              Expanded(child: _buildRatingButton(targetId, 1, '👍', '좋음', currentRating)),
+                              Expanded(
+                                child: _buildRatingButton(
+                                  targetId,
+                                  1,
+                                  '👍',
+                                  '좋음',
+                                  currentRating,
+                                ),
+                              ),
                               const SizedBox(width: 4),
-                              Expanded(child: _buildRatingButton(targetId, 3, '💖', '친절', currentRating)),
+                              Expanded(
+                                child: _buildRatingButton(
+                                  targetId,
+                                  3,
+                                  '💖',
+                                  '친절',
+                                  currentRating,
+                                ),
+                              ),
                               const SizedBox(width: 4),
-                              Expanded(child: _buildRatingButton(targetId, 5, '⚡', '최고', currentRating)),
+                              Expanded(
+                                child: _buildRatingButton(
+                                  targetId,
+                                  5,
+                                  '⚡',
+                                  '최고',
+                                  currentRating,
+                                ),
+                              ),
                             ],
                           ),
                         ],
@@ -159,42 +271,62 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
       actionsPadding: const EdgeInsets.all(16),
       actions: [
         TextButton(
-          onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(true),
+          // 건너뛰기는 null을 반환하며, 상위 모임 상세창은 그대로 둡니다.
+          onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
           child: const Text('건너뛰기', style: TextStyle(color: Colors.grey)),
         ),
         ElevatedButton(
-          onPressed: (_isSubmitting || _ratings.isEmpty) ? null : _submitRatings,
+          onPressed: (_isSubmitting || _ratings.isEmpty)
+              ? null
+              : _submitRatings,
           style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
-          child: _isSubmitting 
-              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('평가 완료', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          child: _isSubmitting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text(
+                  '평가 완료',
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
         ),
       ],
     );
   }
 
-  // 💡 버튼 디자인 로직 (-5점은 유독 더 강렬한 빨간색으로 시각적 경고!)
-  Widget _buildRatingButton(String uid, int score, String emoji, String label, int? currentRating) {
+  Widget _buildRatingButton(
+    String uid,
+    int score,
+    String emoji,
+    String label,
+    int? currentRating,
+  ) {
     final isSelected = currentRating == score;
     final isNegative = score < 0;
-    final isCritical = score == -5; // -5점(최악)인지 판별
+    final isCritical = score == -5;
 
     return InkWell(
-      onTap: () => setState(() => _ratings[uid] = score),
+      onTap: _isSubmitting ? null : () => setState(() => _ratings[uid] = score),
       borderRadius: BorderRadius.circular(12),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
         decoration: BoxDecoration(
-          // -5점은 배경을 더 진한 붉은색으로, 나머지는 기존 컬러 유지
-          color: isSelected 
-              ? (isCritical ? Colors.red.withOpacity(0.2) 
-                  : (isNegative ? Colors.red.withOpacity(0.1) : Colors.amber.withOpacity(0.25))) 
+          color: isSelected
+              ? (isCritical
+                    ? Colors.red.withOpacity(0.2)
+                    : (isNegative
+                          ? Colors.red.withOpacity(0.1)
+                          : Colors.amber.withOpacity(0.25)))
               : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: isSelected 
-                ? (isNegative ? Colors.red : Colors.amber) 
+            color: isSelected
+                ? (isNegative ? Colors.red : Colors.amber)
                 : Colors.grey.shade200,
             width: isSelected ? 2 : 1,
           ),
@@ -202,24 +334,26 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(emoji, style: const TextStyle(fontSize: 18)), // 5개가 들어가야 해서 이모지 사이즈 살짝 축소
+            Text(emoji, style: const TextStyle(fontSize: 18)),
             const SizedBox(height: 6),
             Text(
-              label, 
+              label,
               style: TextStyle(
-                fontSize: 9, 
+                fontSize: 9,
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                color: isSelected ? (isNegative ? Colors.red[900] : Colors.orange[900]) : Colors.black54,
+                color: isSelected
+                    ? (isNegative ? Colors.red[900] : Colors.orange[900])
+                    : Colors.black54,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 2),
             Text(
-              score > 0 ? '+$score' : '$score', 
+              score > 0 ? '+$score' : '$score',
               style: TextStyle(
-                fontSize: 10, 
-                fontWeight: FontWeight.bold, 
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
                 color: isNegative ? Colors.red : Colors.green[700],
               ),
             ),

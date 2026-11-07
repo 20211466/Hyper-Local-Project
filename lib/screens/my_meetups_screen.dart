@@ -1136,6 +1136,39 @@ class _MeetupStreamList extends StatelessWidget {
     required this.isCreatorMode,
   });
 
+  DateTime? _readDateTime(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String) return DateTime.tryParse(value);
+    return null;
+  }
+
+  bool _isMeetingEnded(Map<String, dynamic> data) {
+    if (data['status'] == 'closed' || data['isClosed'] == true) return true;
+    final deadline = _readDateTime(data['deadline']);
+    return deadline != null && !deadline.isAfter(DateTime.now());
+  }
+
+  Future<void> _showMeetingManagementSheet(
+    BuildContext context,
+    String docId,
+    Map<String, dynamic> data,
+  ) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _MeetupManagementSheet(
+        meetingId: docId,
+        isCreator: (data['creatorId'] ?? '').toString() == uid,
+      ),
+    );
+  }
+
   Future<void> _handleDeleteOrLeave(
     BuildContext context,
     String docId,
@@ -1145,93 +1178,82 @@ class _MeetupStreamList extends StatelessWidget {
     if (uid == null) return;
 
     final isActuallyCreator = data['creatorId'] == uid;
-    List<dynamic> participants = data['participants'] ?? [];
-
-    final bool? shouldDelete = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) =>
-          MannerVoltDialog(participantIds: participants, meetingId: docId),
-    );
-
-    if (shouldDelete != true) return;
-
     try {
+      final meetingRef = FirebaseFirestore.instance
+          .collection('meetings')
+          .doc(docId);
       if (isActuallyCreator) {
-        await FirebaseFirestore.instance
-            .collection('meetings')
-            .doc(docId)
-            .delete();
+        await meetingRef.delete();
         try {
           await ChatService().leaveRoom(docId);
-        } catch (_) {}
+        } catch (chatError) {
+          debugPrint('[모임 삭제 후 채팅방 정리 실패] $chatError');
+        }
       } else {
-        await FirebaseFirestore.instance
-            .collection('meetings')
-            .doc(docId)
-            .update({
-              'participants': FieldValue.arrayRemove([uid]),
-              'currentParticipants': FieldValue.increment(-1),
-            });
+        await meetingRef.update({
+          'participants': FieldValue.arrayRemove([uid]),
+          'currentParticipants': FieldValue.increment(-1),
+        });
         try {
           await ChatService().leaveRoom(docId);
-        } catch (_) {}
+        } catch (chatError) {
+          debugPrint('[모임 나가기 후 채팅방 정리 실패] $chatError');
+        }
       }
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              isActuallyCreator ? '종료된 모임을 삭제했습니다.' : '종료된 모임에서 나갔습니다.',
-            ),
+            content: Text(isActuallyCreator ? '모임을 삭제했습니다.' : '모임 기록에서 나갔습니다.'),
+            backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('처리 중 오류가 발생했습니다.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('처리 중 오류가 발생했습니다: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
 
-  void _showDeleteDialog(
+  Future<void> _showDeleteDialog(
     BuildContext context,
     String docId,
     Map<String, dynamic> data,
-  ) {
+  ) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final isActuallyCreator = data['creatorId'] == uid;
-
-    showDialog(
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(isActuallyCreator ? '모임 삭제' : '모임 기록 삭제'),
         content: Text(
           isActuallyCreator
-              ? '이 모임 데이터를 완전히 삭제하시겠습니까?\n(채팅방 목록에서도 사라집니다.)'
-              : '이 모임의 참여 기록과 채팅방을 내 목록에서 지우시겠습니까?',
+              ? '이 모임을 완전히 삭제할까요?\n참여자 평가를 먼저 진행하는 것을 권장합니다.'
+              : '이 모임의 참여 기록을 내 목록에서 삭제할까요?',
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('취소', style: TextStyle(color: Colors.grey)),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('취소'),
           ),
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _handleDeleteOrLeave(context, docId, data);
-            },
-            child: const Text(
-              '삭제',
-              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('삭제', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
+
+    if (confirmed == true && context.mounted) {
+      await _handleDeleteOrLeave(context, docId, data);
+    }
   }
 
   @override
@@ -1239,13 +1261,14 @@ class _MeetupStreamList extends StatelessWidget {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: stream,
       builder: (context, snapshot) {
-        if (snapshot.hasError)
+        if (snapshot.hasError) {
           return Center(child: Text('오류가 발생했습니다: ${snapshot.error}'));
-        if (!snapshot.hasData)
+        }
+        if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
+        }
 
         final docs = snapshot.data!.docs;
-
         if (docs.isEmpty) {
           return Center(
             child: Padding(
@@ -1259,8 +1282,6 @@ class _MeetupStreamList extends StatelessWidget {
           );
         }
 
-        final now = DateTime.now();
-
         return ListView.separated(
           padding: const EdgeInsets.all(16),
           itemCount: docs.length,
@@ -1268,20 +1289,22 @@ class _MeetupStreamList extends StatelessWidget {
           itemBuilder: (context, index) {
             final data = docs[index].data();
             final docId = docs[index].id;
-
-            bool isExpired = false;
-            if (data['deadline'] != null) {
-              final deadline = (data['deadline'] as Timestamp).toDate();
-              if (now.isAfter(deadline)) isExpired = true;
-            }
+            final isEnded = _isMeetingEnded(data);
+            final isCreator =
+                data['creatorId'] == FirebaseAuth.instance.currentUser?.uid;
 
             return Stack(
               children: [
-                MeetupCard(meetupData: data),
-                if (isExpired)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () =>
+                      _showMeetingManagementSheet(context, docId, data),
+                  child: MeetupCard(meetupData: data),
+                ),
+                if (isEnded)
                   Positioned(
-                    top: 10,
-                    right: 10,
+                    top: 0,
+                    right: 0,
                     child: Material(
                       color: Colors.transparent,
                       child: InkWell(
@@ -1290,7 +1313,7 @@ class _MeetupStreamList extends StatelessWidget {
                         child: Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.9),
+                            color: Colors.white.withOpacity(0.95),
                             shape: BoxShape.circle,
                             boxShadow: const [
                               BoxShadow(color: Colors.black12, blurRadius: 4),
@@ -1305,11 +1328,612 @@ class _MeetupStreamList extends StatelessWidget {
                       ),
                     ),
                   ),
+                if (isEnded && isCreator)
+                  Positioned(
+                    bottom: 20,
+                    right: 12,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade700,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          '평가 가능',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             );
           },
         );
       },
+    );
+  }
+}
+
+class _MeetupManagementSheet extends StatefulWidget {
+  final String meetingId;
+  final bool isCreator;
+
+  const _MeetupManagementSheet({
+    required this.meetingId,
+    required this.isCreator,
+  });
+
+  @override
+  State<_MeetupManagementSheet> createState() => _MeetupManagementSheetState();
+}
+
+class _MeetupManagementSheetState extends State<_MeetupManagementSheet> {
+  bool _isClosing = false;
+  bool _isEvaluating = false;
+
+  DateTime? _readDateTime(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String) return DateTime.tryParse(value);
+    return null;
+  }
+
+  bool _isEnded(Map<String, dynamic> data) {
+    if (data['status'] == 'closed' || data['isClosed'] == true) return true;
+    final deadline = _readDateTime(data['deadline']);
+    return deadline != null && !deadline.isAfter(DateTime.now());
+  }
+
+  List<String> _participantIds(Map<String, dynamic> data) {
+    final ids = <String>{};
+    final creatorId = (data['creatorId'] ?? '').toString().trim();
+    final raw = data['participants'];
+    if (raw is Iterable) {
+      for (final value in raw) {
+        final id = value.toString().trim();
+        if (id.isNotEmpty) ids.add(id);
+      }
+    }
+    if (creatorId.isNotEmpty) {
+      // 방장을 맨 앞에 노출하기 위해 별도 순서로 다시 구성합니다.
+      return [creatorId, ...ids.where((id) => id != creatorId)];
+    }
+    return ids.toList();
+  }
+
+  Future<void> _closeMeetingEarly(Map<String, dynamic> data) async {
+    if (!widget.isCreator || _isEnded(data) || _isClosing) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('모임을 지금 마감할까요?'),
+        content: const Text(
+          '모임 모집이 즉시 종료됩니다.\n지도와 모임 탐색에서 더 이상 신규 참여자를 받지 않으며, 마감 후 참가자 평가를 진행할 수 있습니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('조기 마감'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isClosing = true);
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      await FirebaseFirestore.instance
+          .collection('meetings')
+          .doc(widget.meetingId)
+          .update({
+            'deadline': Timestamp.fromDate(
+              DateTime.now().subtract(const Duration(seconds: 1)),
+            ),
+            'status': 'closed',
+            'isClosed': true,
+            'closedAt': FieldValue.serverTimestamp(),
+            'closedBy': uid,
+          });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('모임을 조기 마감했습니다. 이제 참가자 평가를 진행할 수 있습니다.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('모임 마감에 실패했습니다: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isClosing = false);
+    }
+  }
+
+  Future<void> _startParticipantEvaluation(List<String> participantIds) async {
+    if (_isEvaluating) return;
+
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid == null) return;
+
+    final targets = participantIds.where((id) => id != currentUid).toList();
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('평가할 다른 참여자가 없습니다.')));
+      return;
+    }
+
+    // 평가창과 모임 상세창이 모두 닫힌 뒤에도 사용할 수 있도록 미리 가져옵니다.
+    final messenger = ScaffoldMessenger.of(context);
+    final sheetNavigator = Navigator.of(context);
+
+    setState(() => _isEvaluating = true);
+    try {
+      final result = await showDialog<MannerVoltResult>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => MannerVoltDialog(
+          participantIds: participantIds,
+          meetingId: widget.meetingId,
+        ),
+      );
+
+      if (!mounted || result == null) return;
+
+      // 평가가 한 명에게도 반영되지 않았더라도, 최근 7일 이내 중복 평가
+      // 결과를 안내해야 하므로 결과가 반환되면 상세창도 함께 닫습니다.
+      final messages = <String>[];
+      if (result.successCount > 0) {
+        messages.add('${result.successCount}명의 매너 볼트 점수가 반영되었습니다.');
+      }
+      if (result.skippedCount > 0) {
+        messages.add(
+          '${result.skippedCount}명은 최근 7일 이내 이미 평가해 점수 반영에서 제외했습니다.',
+        );
+      }
+      if (result.unavailableCount > 0) {
+        messages.add(
+          '${result.unavailableCount}명은 사용자 정보를 찾을 수 없어 평가하지 못했습니다.',
+        );
+      }
+      if (messages.isEmpty) {
+        messages.add('반영된 평가 점수가 없습니다.');
+      }
+      messages.add('종료된 모임 기록은 내 정보에 보관됩니다. 필요하면 목록에서 직접 삭제할 수 있습니다.');
+
+      final message = messages.join('\n');
+      final hasAppliedScore = result.successCount > 0;
+
+      // 평가창은 이미 닫힌 상태입니다. 이제 모임 상세창을 닫고 안내문을 띄웁니다.
+      sheetNavigator.pop();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: hasAppliedScore
+              ? Colors.green
+              : Colors.orange.shade800,
+          duration: const Duration(seconds: 5),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      final message = e.code == 'permission-denied'
+          ? '평가 저장 권한이 없습니다. Firestore Rules가 최신 파일로 게시되었는지 확인해주세요.'
+          : '평가 처리 중 오류가 발생했습니다. (${e.code})';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('평가 처리 중 오류가 발생했습니다: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isEvaluating = false);
+    }
+  }
+
+  Widget _buildParticipantTile(String uid, String creatorId) {
+    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const ListTile(
+            leading: CircleAvatar(child: Icon(Icons.person_outline)),
+            title: Text('참여자 정보 불러오는 중...'),
+          );
+        }
+        if (snapshot.hasError) {
+          return ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+            title: Text(uid == creatorId ? '방장' : '참여자'),
+            subtitle: const Text('프로필을 불러오지 못했습니다.'),
+          );
+        }
+
+        final userData = snapshot.data?.data() ?? <String, dynamic>{};
+        final nickname = (userData['displayName'] ?? '이름 없는 사용자').toString();
+        final photoUrl = (userData['photoUrl'] ?? '').toString();
+        final mbti = (userData['mbti'] ?? '비공개').toString();
+        final ageGroup = (userData['ageGroup'] ?? '비공개').toString();
+        final gender = (userData['gender'] ?? '비공개').toString();
+        final volt = (userData['mannerVolt'] as num?)?.toInt() ?? 0;
+        final isHost = uid == creatorId;
+
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: CircleAvatar(
+            backgroundColor: Colors.green.shade50,
+            backgroundImage: photoUrl.isNotEmpty
+                ? NetworkImage(photoUrl)
+                : null,
+            child: photoUrl.isEmpty
+                ? const Icon(Icons.person, color: Colors.green)
+                : null,
+          ),
+          title: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  nickname,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              if (isHost) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Text(
+                    '방장',
+                    style: TextStyle(
+                      color: Colors.green.shade800,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          subtitle: Text('$ageGroup · $gender · $mbti · 매너 볼트 $volt V'),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final meetingRef = FirebaseFirestore.instance
+        .collection('meetings')
+        .doc(widget.meetingId);
+    final height = MediaQuery.of(context).size.height * 0.86;
+
+    return Container(
+      height: height,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: meetingRef.snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(child: Text('모임 정보를 불러오지 못했습니다: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.green),
+            );
+          }
+          final data = snapshot.data!.data();
+          if (data == null) {
+            return const Center(child: Text('모임이 삭제되었거나 찾을 수 없습니다.'));
+          }
+
+          final title = (data['title'] ?? '제목 없음').toString();
+          final category = (data['category'] ?? '기타').toString();
+          final location =
+              (data['location'] ?? data['dong'] ?? data['region'] ?? '장소 미상')
+                  .toString();
+          final creatorId = (data['creatorId'] ?? '').toString();
+          final participants = _participantIds(data);
+          final currentCount =
+              (data['currentParticipants'] as num?)?.toInt() ??
+              participants.length;
+          final maxCount = (data['maxParticipants'] as num?)?.toInt() ?? 0;
+          final ended = _isEnded(data);
+          final deadline = _readDateTime(data['deadline']);
+
+          return SafeArea(
+            top: false,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '$category · $location',
+                              style: const TextStyle(
+                                color: Colors.black54,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '닫기',
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  margin: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: ended ? Colors.grey.shade100 : Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        ended ? Icons.event_busy : Icons.groups,
+                        color: ended ? Colors.grey : Colors.green,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              ended ? '종료된 모임' : '모임 참여 인원',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              maxCount > 0
+                                  ? '$currentCount / $maxCount명 참여'
+                                  : '$currentCount명 참여',
+                              style: const TextStyle(
+                                color: Colors.black54,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: ended
+                              ? Colors.grey.shade300
+                              : Colors.green.shade100,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          ended ? '평가 단계' : '모집 중',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: ended
+                                ? Colors.grey.shade800
+                                : Colors.green.shade800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          '참여자 정보',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        '${participants.length}명',
+                        style: const TextStyle(
+                          color: Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Expanded(
+                  child: participants.isEmpty
+                      ? const Center(child: Text('등록된 참여자가 없습니다.'))
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                          itemCount: participants.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (context, index) =>
+                              _buildParticipantTile(
+                                participants[index],
+                                creatorId,
+                              ),
+                        ),
+                ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (widget.isCreator && !ended)
+                        ElevatedButton.icon(
+                          onPressed: _isClosing
+                              ? null
+                              : () => _closeMeetingEarly(data),
+                          icon: _isClosing
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.flag_rounded),
+                          label: Text(_isClosing ? '마감 처리 중...' : '모임 조기 마감'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.redAccent,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size.fromHeight(48),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      if (widget.isCreator && !ended)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 7),
+                          child: Text(
+                            '조기 마감하면 신규 참여가 중단되고 참가자 평가를 진행할 수 있습니다.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.black54,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                      if (ended) ...[
+                        ElevatedButton.icon(
+                          onPressed: _isEvaluating || participants.length <= 1
+                              ? null
+                              : () => _startParticipantEvaluation(participants),
+                          icon: _isEvaluating
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.stars_rounded),
+                          label: Text(
+                            _isEvaluating ? '평가 화면 여는 중...' : '참가자 평가하기',
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size.fromHeight(48),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.only(top: 7),
+                          child: Text(
+                            '평가를 마쳐도 모임 기록은 내 정보에 보관됩니다. 필요하면 목록의 휴지통 버튼으로 직접 삭제할 수 있습니다.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.black54,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (!ended && !widget.isCreator)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 8),
+                          child: Text(
+                            '모임 방장이 마감하면 참가자 평가를 진행할 수 있습니다.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.black54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      if (deadline != null && !ended)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 5),
+                          child: Text(
+                            '예정 마감: ${deadline.month}월 ${deadline.day}일 ${deadline.hour.toString().padLeft(2, '0')}:${deadline.minute.toString().padLeft(2, '0')}',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.black45,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
