@@ -1048,36 +1048,6 @@ class _MyMeetupsScreenState extends State<MyMeetupsScreen> {
                                     _buildBadge(gender, Colors.pink),
                                     _buildBadge(mbti, Colors.purple),
                                     _buildMannerVoltBadge(mannerVolt),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.add_circle,
-                                        color: Colors.orange,
-                                        size: 20,
-                                      ),
-                                      tooltip: '테스트용 볼트 충전',
-                                      padding: EdgeInsets.zero,
-                                      constraints: const BoxConstraints(),
-                                      onPressed: () async {
-                                        try {
-                                          await firestore
-                                              .collection('users')
-                                              .doc(user.uid)
-                                              .update({
-                                                'mannerVolt':
-                                                    FieldValue.increment(10),
-                                              });
-                                        } catch (e) {
-                                          if (!context.mounted) return;
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Text('매너 볼트 변경 실패: $e'),
-                                            ),
-                                          );
-                                        }
-                                      },
-                                    ),
                                   ],
                                 ),
                               ],

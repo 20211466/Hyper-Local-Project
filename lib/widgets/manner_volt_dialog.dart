@@ -74,6 +74,11 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
           final logSnap = cooldownDocs[targetId];
           final userSnap = userDocs[targetId];
 
+          // 화면에 표시된 다섯 가지 점수 이외의 값은 저장하지 않습니다.
+          if (!const [-5, -1, 1, 3, 5].contains(score)) {
+            throw StateError('허용되지 않은 매너 볼트 점수입니다.');
+          }
+
           // 이미 탈퇴했거나 프로필 문서가 없는 사용자는 점수를 반영하지 않습니다.
           if (userSnap == null || !userSnap.exists) {
             unavailableCount++;
@@ -107,9 +112,9 @@ class _MannerVoltDialogState extends State<MannerVoltDialog> {
               'reviewerId': reviewerId,
               'targetId': targetId,
               'meetingId': widget.meetingId,
+              'score': score,
               'lastRatedAt': FieldValue.serverTimestamp(),
             },
-            SetOptions(merge: true),
           );
 
           successCount++;
