@@ -1,4 +1,3 @@
-
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -8,9 +7,7 @@ class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  final GoogleSignIn _googleSignIn = GoogleSignIn(
-    clientId: '154101026042-44deanqlktbm63g78ijqjm6cf7221q95.apps.googleusercontent.com',
-  );
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
 
   User? get currentUser => _auth.currentUser;
 
@@ -20,10 +17,7 @@ class AuthService {
     required String email,
     required String password,
   }) {
-    return _auth.signInWithEmailAndPassword(
-      email: email,
-      password: password,
-    );
+    return _auth.signInWithEmailAndPassword(email: email, password: password);
   }
 
   // 회원가입
@@ -50,10 +44,7 @@ class AuthService {
 
     // 3. Firestore users 컬렉션에 사용자 정보 저장
     if (credential.user != null) {
-      await _firestore
-          .collection('users')
-          .doc(credential.user!.uid)
-          .set({
+      await _firestore.collection('users').doc(credential.user!.uid).set({
         'uid': credential.user!.uid,
         'email': email,
         'displayName': nickname,
@@ -151,9 +142,7 @@ class AuthService {
   }
 
   // 휴대폰 인증 정보를 기존 계정에 연결
-  Future<void> _linkPhoneCredential(
-    PhoneAuthCredential credential,
-  ) async {
+  Future<void> _linkPhoneCredential(PhoneAuthCredential credential) async {
     final user = _auth.currentUser;
 
     if (user == null) return;
@@ -185,9 +174,7 @@ class AuthService {
     );
 
     // 1. Firebase Google 로그인
-    final userCredential = await _auth.signInWithCredential(
-      credential,
-    );
+    final userCredential = await _auth.signInWithCredential(credential);
 
     // 2. 신규 Google 회원 Firestore 문서 생성
     if (userCredential.user != null) {
@@ -201,8 +188,7 @@ class AuthService {
         await userRef.set({
           'uid': userCredential.user!.uid,
           'email': userCredential.user!.email,
-          'displayName':
-              userCredential.user!.displayName ?? '구글 유저',
+          'displayName': userCredential.user!.displayName ?? '구글 유저',
           'gender': '비공개',
           'age': 0,
           'ageGroup': '비공개',
@@ -235,9 +221,7 @@ class AuthService {
 
     if (user == null) return false;
 
-    return user.providerData.any(
-      (p) => p.providerId == 'google.com',
-    );
+    return user.providerData.any((p) => p.providerId == 'google.com');
   }
 
   // 재인증
@@ -285,7 +269,12 @@ class AuthService {
   Future<void> deleteAccount() async {
     final user = _auth.currentUser;
 
-    if (user == null) return;
+    if (user == null) {
+      throw FirebaseAuthException(
+        code: 'no-current-user',
+        message: '현재 로그인된 계정이 없습니다.',
+      );
+    }
 
     final uid = user.uid;
     final chatService = ChatService();
@@ -301,7 +290,9 @@ class AuthService {
 
       try {
         await chatService.leaveRoom(doc.id);
-      } catch (_) {}
+      } catch (_) {
+        // 채팅방 정리 실패가 계정 삭제 전체를 중단시키지는 않도록 합니다.
+      }
     }
 
     // 2. 참여 중인 다른 모임에서 나가기
@@ -320,21 +311,27 @@ class AuthService {
 
       try {
         await chatService.leaveRoom(doc.id);
-      } catch (_) {}
+      } catch (_) {
+        // 채팅방 정리 실패는 로그/별도 정리 대상으로 남길 수 있습니다.
+      }
     }
 
-    // 3. Firestore 사용자 정보 삭제
-    try {
-      await _firestore.collection('users').doc(uid).delete();
-    } catch (_) {}
+    // 3. Firestore 사용자 문서 삭제
+    // 삭제 실패를 숨기면 Auth 계정만 지워지고 프로필 문서가 남을 수 있으므로
+    // 여기서는 오류를 호출한 화면으로 전달합니다.
+    await _firestore.collection('users').doc(uid).delete();
 
-    // 4. Firebase Auth 계정 삭제
+    // 4. Firebase Authentication 계정 삭제
+    // 이 시점에는 화면에서 최근 로그인 재인증이 이미 완료되어 있어야 합니다.
     await user.delete();
 
     // 5. Google 로그인 세션 정리
     try {
       await _googleSignIn.signOut();
-    } catch (_) {}
+    } catch (_) {
+      // Firebase 계정은 이미 삭제되었으므로 Google 세션 정리 실패로
+      // 회원탈퇴 전체를 실패 처리하지 않습니다.
+    }
   }
 
   // ===================== 오류 메시지 =====================

@@ -33,7 +33,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
   String _participantCacheKey = '';
   Future<List<_ChatParticipant>>? _participantFuture;
 
-  // 💡 [추가] 차단한 유저들의 UID를 담아둘 리스트
+  // 차단한 유저들의 UID를 담아둘 리스트
   List<String> _blockedUsers = [];
 
   final List<String> _emojis = const [

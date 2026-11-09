@@ -675,7 +675,7 @@ class _AllMeetupBoardScreenState extends State<AllMeetupBoardScreen> {
                   itemBuilder: (context, index) {
                     var meetup = activeMeetups[index];
 
-                    // 💡 [수정됨] DB 데이터 추출 시 에러가 나지 않도록 매우 안전하게 변경
+                    // DB 데이터 추출 시 에러가 나지 않도록 매우 안전하게 변경
                     final data = meetup.data() as Map<String, dynamic>? ?? {};
 
                     String title = data['title'] ?? '제목 없음';

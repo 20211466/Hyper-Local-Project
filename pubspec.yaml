@@ -29,7 +29,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  # 🚀 [NEW] 앱 아이콘과 로딩 화면을 만들어줄 마법의 도구 추가!
+  # 앱 아이콘과 로딩 화면을 만들어줄 마법의 도구 추가!
   flutter_launcher_icons: "^0.13.1"
   flutter_native_splash: "^2.4.0"
 
@@ -38,10 +38,10 @@ flutter:
   assets:
     - assets/splash_android12.png
     - assets/lightning_icon.png
-    - assets/app_logo.png # 🚀 [NEW] 준비하신 새 로고 이미지 경로 추가!
+    - assets/app_logo.png # 준비하신 새 로고 이미지 경로 추가!
     - .env
 
-# 🚀 [NEW] 여기서부터 파일 맨 아래까지가 아이콘 & 스플래시 생성 설정입니다.
+# 여기서부터 파일 맨 아래까지가 아이콘 & 스플래시 생성 설정입니다.
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
