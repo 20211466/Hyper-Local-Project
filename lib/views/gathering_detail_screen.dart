@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -685,14 +687,18 @@ class AiMatchingCard extends StatefulWidget {
   final String meetingTitle;
   final String meetingDescription;
 
-  const AiMatchingCard({super.key, required this.meetingTitle, required this.meetingDescription});
+  const AiMatchingCard({
+    super.key,
+    required this.meetingTitle,
+    required this.meetingDescription,
+  });
 
   @override
   State<AiMatchingCard> createState() => _AiMatchingCardState();
 }
 
 class _AiMatchingCardState extends State<AiMatchingCard> {
-  bool _isLoading = true;
+  bool _isLoading = false;
   int _score = 0;
   String _reason = '';
   String _errorMessage = '';
@@ -704,54 +710,157 @@ class _AiMatchingCardState extends State<AiMatchingCard> {
   }
 
   Future<void> _analyzeMatch() async {
+    if (_isLoading) return;
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = '';
+      _reason = '';
+      _score = 0;
+    });
+
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      String myMbti = 'ENFP'; 
-      if (user != null) {
-        final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-        myMbti = (doc.data() as Map<String, dynamic>?)?['mbti'] ?? 'ENFP';
+      // 1. Gemini API 키 확인
+      final apiKey = dotenv.env['GEMINI_API_KEY']?.trim() ?? '';
+      if (apiKey.isEmpty) {
+        throw const _AiMatchingException(
+          'Gemini API 키를 찾을 수 없습니다. .env 파일에 GEMINI_API_KEY가 설정되어 있는지 확인해 주세요.',
+        );
       }
 
+      // 2. 로그인한 사용자의 MBTI 조회
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw const _AiMatchingException('로그인 정보를 확인할 수 없습니다. 다시 로그인해 주세요.');
+      }
+
+      final userSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get()
+          .timeout(const Duration(seconds: 10));
+
+      final userData = userSnapshot.data();
+      final myMbti = (userData?['mbti'] ?? '').toString().trim();
+      final mbtiForPrompt = myMbti.isEmpty || myMbti == '비공개'
+          ? '미설정'
+          : myMbti.toUpperCase();
+
+      // 이 프로젝트의 다른 AI 기능과 동일한 Gemini 모델 사용
       final model = GenerativeModel(
-        model: 'gemini-3.6-flash',
-        apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
+        model: 'gemini-3.5-flash-lite',
+        apiKey: apiKey,
+        generationConfig: GenerationConfig(
+          responseMimeType: 'application/json',
+          maxOutputTokens: 220,
+          temperature: 0.3,
+        ),
       );
 
-      final prompt = """
-      너는 커뮤니티 앱의 천재 매칭 매니저야.
-      내 MBTI는 [$myMbti]야. 
-      참여하려는 모임 제목: [${widget.meetingTitle}]
-      모임 설명: [${widget.meetingDescription}]
-      
-      이 모임이 내 성향과 얼마나 잘 맞을지 1~100 사이의 점수와, 왜 그렇게 생각하는지 2줄 이내로 아주 유쾌하게 적어줘.
-      마크다운이나 기호 절대 금지. 오직 아래 JSON 형식만 반환해.
-      {"score": 95, "reason": "ENFP 특유의 인싸력이라면 이 모임의 분위기 메이커는 따놓은 당상!"}
-      """;
+      final prompt = '''
+너는 동네 모임을 추천하는 친근한 AI 매칭 도우미야.
+사용자 MBTI: $mbtiForPrompt
+참여하려는 모임 제목: ${widget.meetingTitle}
+모임 설명: ${widget.meetingDescription}
 
-      final response = await model.generateContent([Content.text(prompt)]);
-      String cleanJson = response.text?.trim() ?? '';
-      
-      if (cleanJson.startsWith('```json')) cleanJson = cleanJson.replaceFirst('```json', '');
-      if (cleanJson.startsWith('```')) cleanJson = cleanJson.replaceFirst('```', '');
-      if (cleanJson.endsWith('```')) cleanJson = cleanJson.substring(0, cleanJson.length - 3);
-      
-      final data = jsonDecode(cleanJson.trim());
-      
-      if (mounted) {
-        setState(() {
-          _score = data['score'] ?? 50;
-          _reason = data['reason'] ?? '무난하게 잘 어울릴 모임입니다!';
-          _isLoading = false;
-        });
+이 모임이 사용자에게 얼마나 잘 맞을지 참고용 점수를 1부터 100 사이 정수로 평가해.
+MBTI가 미설정이면 MBTI를 임의로 추측하지 말고 모임 제목과 설명을 바탕으로 일반적인 추천 의견을 작성해.
+점수의 이유는 한국어로 자연스럽고 간결하게 1~2문장으로 작성해.
+실제 성격이나 참여 결과를 단정하지 말고 재미와 참고를 위한 추천임을 고려해.
+마크다운이나 코드 블록 없이 다음 JSON 객체 하나만 반환해.
+{"score": 85, "reason": "관심사와 잘 맞아 즐겁게 참여할 수 있을 것 같아요."}
+''';
+
+      final response = await model
+          .generateContent([Content.text(prompt)])
+          .timeout(const Duration(seconds: 25));
+
+      final responseText = response.text?.trim() ?? '';
+      if (responseText.isEmpty) {
+        throw const FormatException(
+          'Gemini에서 빈 응답을 받았습니다. 잠시 후 다시 시도해 주세요.',
+        );
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = 'AI 분석에 실패했어요 😢';
-          _isLoading = false;
-        });
+
+      // JSON 앞뒤에 불필요한 문장이 포함되어도 JSON 객체만 추출
+      final jsonStart = responseText.indexOf('{');
+      final jsonEnd = responseText.lastIndexOf('}');
+      if (jsonStart < 0 || jsonEnd <= jsonStart) {
+        throw const FormatException(
+          'AI 응답에서 결과 데이터를 찾지 못했습니다. 다시 시도해 주세요.',
+        );
       }
+
+      final jsonText = responseText.substring(jsonStart, jsonEnd + 1);
+      final decoded = jsonDecode(jsonText);
+      if (decoded is! Map) {
+        throw const FormatException('AI 응답 형식이 올바르지 않습니다.');
+      }
+
+      final scoreValue = decoded['score'];
+      final parsedScore = scoreValue is num
+          ? scoreValue.toInt()
+          : int.tryParse(scoreValue?.toString() ?? '');
+      final generatedReason = (decoded['reason'] ?? '').toString().trim();
+
+      if (parsedScore == null || generatedReason.isEmpty) {
+        throw const FormatException(
+          'AI 분석 결과에 점수 또는 설명이 누락되었습니다. 다시 시도해 주세요.',
+        );
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _score = parsedScore.clamp(1, 100).toInt();
+        _reason = generatedReason;
+        _isLoading = false;
+        _errorMessage = '';
+      });
+    } on TimeoutException {
+      _setError('AI 분석 응답 시간이 초과되었습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.');
+    } on _AiMatchingException catch (error) {
+      _setError(error.message);
+    } catch (error, stackTrace) {
+      debugPrint('[AI 성향 분석 실패] $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      final raw = error.toString();
+      final lower = raw.toLowerCase();
+      String message;
+
+      if (raw.contains('429') ||
+          lower.contains('quota') ||
+          lower.contains('resource_exhausted')) {
+        message = 'Gemini API 사용량 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.';
+      } else if (raw.contains('401') ||
+          raw.contains('403') ||
+          lower.contains('api key not valid') ||
+          lower.contains('permission_denied')) {
+        message = 'Gemini API 인증에 실패했습니다. .env의 API 키와 사용 권한을 확인해 주세요.';
+      } else if (raw.contains('404') || lower.contains('not found')) {
+        message = 'Gemini 모델 또는 API 주소를 찾을 수 없습니다. 모델 설정을 확인해 주세요.';
+      } else if (error is FormatException) {
+        message = error.message;
+      } else if (lower.contains('socket') ||
+          lower.contains('network') ||
+          lower.contains('failed host lookup') ||
+          lower.contains('clientexception')) {
+        message = '네트워크 연결에 실패했습니다. 인터넷 연결을 확인해 주세요.';
+      } else {
+        final detail = raw.length > 160 ? '${raw.substring(0, 160)}…' : raw;
+        message = 'AI 분석에 실패했습니다. 아래 오류를 확인해 주세요.\n$detail';
+      }
+
+      _setError(message);
     }
+  }
+
+  void _setError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _errorMessage = message;
+    });
   }
 
   @override
@@ -761,25 +870,82 @@ class _AiMatchingCardState extends State<AiMatchingCard> {
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [Colors.purple[50]!, Colors.blue[50]!],
+          colors: [Colors.purple.shade50, Colors.blue.shade50],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.purple.withOpacity(0.2)),
-        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 3))],
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black12,
+            blurRadius: 8,
+            offset: Offset(0, 3),
+          ),
+        ],
       ),
       child: _isLoading
           ? const Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.purple)),
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.purple,
+                  ),
+                ),
                 SizedBox(width: 12),
-                Text("AI가 회원님과의 궁합을 분석 중입니다... 🪄", style: TextStyle(color: Colors.purple, fontWeight: FontWeight.bold)),
+                Expanded(
+                  child: Text(
+                    'AI가 회원님과의 모임 궁합을 분석하고 있습니다...',
+                    style: TextStyle(
+                      color: Colors.purple,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
               ],
             )
           : _errorMessage.isNotEmpty
-              ? Text(_errorMessage, style: const TextStyle(color: Colors.red))
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.error_outline, color: Colors.red),
+                        SizedBox(width: 8),
+                        Text(
+                          'AI 스마트 매칭',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      _errorMessage,
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontSize: 13,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton.icon(
+                        onPressed: _analyzeMatch,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: const Text('다시 분석하기'),
+                      ),
+                    ),
+                  ],
+                )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -787,25 +953,69 @@ class _AiMatchingCardState extends State<AiMatchingCard> {
                       children: [
                         const Icon(Icons.auto_awesome, color: Colors.purple),
                         const SizedBox(width: 8),
-                        const Text("AI 스마트 매칭", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
+                        const Text(
+                          'AI 스마트 매칭',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: Colors.black87,
+                          ),
+                        ),
                         const Spacer(),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
-                            color: _score >= 80 ? Colors.green : (_score >= 50 ? Colors.orange : Colors.red),
+                            color: _score >= 80
+                                ? Colors.green
+                                : (_score >= 50 ? Colors.orange : Colors.red),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Text(
-                            "$_score점", 
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                            '$_score점',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text(_reason, style: const TextStyle(fontSize: 14, color: Colors.black87, height: 1.5)),
+                    Text(
+                      _reason,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.black87,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '※ MBTI 및 모임 정보를 바탕으로 한 참고용 추천입니다.',
+                      style: TextStyle(fontSize: 11, color: Colors.black45),
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: _analyzeMatch,
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('다시 분석'),
+                      ),
+                    ),
                   ],
                 ),
     );
   }
+}
+
+class _AiMatchingException implements Exception {
+  final String message;
+  const _AiMatchingException(this.message);
+
+  @override
+  String toString() => message;
 }

@@ -11,7 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'dart:convert';
 
-import 'package:url_launcher/url_launcher.dart'; // 💡 외부 지도(카카오/네이버) 실행용
+import 'package:url_launcher/url_launcher.dart'; // 외부 지도(카카오/네이버) 실행용
 
 import '../models/gathering_model.dart';
 import '../services/chat_service.dart';
@@ -48,7 +48,7 @@ class MapScreenState extends State<MapScreen> {
   Timer? _debounce;
   BitmapDescriptor? _boltIcon;
 
-  // 🛡️ 안심지킴이집 방패 마커 아이콘 저장 변수
+  // 안심지킴이집 방패 마커 아이콘 저장 변수
   BitmapDescriptor? _safeZoneIcon;
 
   final Map<String, BitmapDescriptor> _categoryIcons = {};
@@ -108,7 +108,7 @@ class MapScreenState extends State<MapScreen> {
     super.dispose();
   }
 
-  // 🛡️ 안심지킴이집 전용 커스텀 마커(방패 모양) 생성 함수 (크기 축소 버전)
+  // 안심지킴이집 전용 커스텀 마커(방패 모양) 생성 함수 (크기 축소 버전)
   Future<void> _loadSafeZoneIcon() async {
     final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
     final Canvas canvas = Canvas(pictureRecorder);
@@ -382,7 +382,7 @@ class MapScreenState extends State<MapScreen> {
     }
   }
 
-  // 🚨 내 현재 위치에서 가장 가까운 대피소를 찾아 길안내 실행
+  // 내 현재 위치에서 가장 가까운 대피소를 찾아 길안내 실행
   // 우선순위: 카카오맵 → 네이버 지도 → Google 지도
   Future<void> _findNearestSafeZoneAndLaunch() async {
     if (_currentP == null) {
@@ -539,14 +539,13 @@ class MapScreenState extends State<MapScreen> {
   Future<void> _polishTextWithAI(StateSetter setSheetState) async {
     if (_isAiLoading) return;
 
-    // BottomSheet가 닫힌 뒤 비동기 응답이 도착해도 setState 예외가
-    // 발생하지 않도록 화면 갱신을 안전하게 처리합니다.
+    // BottomSheet가 닫힌 뒤 AI 응답이 도착해도 화면 갱신 오류가 발생하지 않도록 처리합니다.
     void updateSheet(VoidCallback callback) {
       if (!mounted) return;
       try {
         setSheetState(callback);
-      } catch (e) {
-        debugPrint('[AI 모집글] BottomSheet가 닫혀 화면 갱신을 건너뜁니다: $e');
+      } catch (error) {
+        debugPrint('[AI 모집글] BottomSheet가 닫혀 화면 갱신을 건너뜁니다: $error');
       }
     }
 
@@ -572,11 +571,15 @@ class MapScreenState extends State<MapScreen> {
       );
     }
 
+    // 제목 또는 상세 설명 중 하나만 입력해도 AI 작성을 진행할 수 있습니다.
     final inputTitle = _titleController.text.trim();
     final inputNote = _noteController.text.trim();
 
-    if (inputTitle.isEmpty) {
-      showFeedback('제목이나 핵심 키워드를 먼저 입력해 주세요.', isError: true);
+    if (inputTitle.isEmpty && inputNote.isEmpty) {
+      showFeedback(
+        '모임 주제나 상세 설명을 하나 이상 입력해 주세요.',
+        isError: true,
+      );
       return;
     }
 
@@ -601,36 +604,50 @@ class MapScreenState extends State<MapScreen> {
         apiKey: apiKey,
         generationConfig: GenerationConfig(
           responseMimeType: 'application/json',
-          maxOutputTokens: 220,
-          temperature: 0.25,
+          maxOutputTokens: 300,
+          temperature: 0.45,
         ),
       );
 
-      final prompt =
-          '''
-동네 번개 모임 모집글을 간결하고 자연스럽게 다듬어 JSON으로만 반환해.
+      final prompt = '''
+너는 동네 번개 모임의 모집글을 작성하는 도우미야.
+사용자가 입력한 정보를 바탕으로 모임 제목과 상세 설명을 모두 작성해.
+
 카테고리: $_selectedCategory
-제목/키워드: $inputTitle
-설명: $inputNote
-조건: 제목 30자 이내, 설명은 핵심 정보가 담긴 1~2문장, 100자 이내. 사실을 새로 만들지 말고 입력 내용을 유지해. 이모지와 마크다운 금지.
-출력 형식: {"title":"제목","description":"설명"}
+사용자가 입력한 제목 또는 주제: ${inputTitle.isEmpty ? '입력하지 않음' : inputTitle}
+사용자가 입력한 추가 설명: ${inputNote.isEmpty ? '입력하지 않음' : inputNote}
+
+작성 규칙:
+1. 제목(title)은 모임 내용을 잘 나타내는 자연스러운 한국어 문장으로 작성하고 30자 이내로 작성해.
+2. 상세 설명(description)은 처음 보는 사람도 모임 내용을 이해하고 참여 여부를 판단할 수 있도록 1~3문장, 120자 이내로 작성해.
+3. 제목이 비어 있으면 상세 설명과 카테고리를 바탕으로 제목을 새로 만들어.
+4. 상세 설명이 비어 있으면 제목과 카테고리를 바탕으로 부담 없는 소개 문장을 만들어.
+5. 사용자가 제공하지 않은 날짜, 시간, 장소, 가격, 준비물 등의 사실을 임의로 만들지 마.
+6. 입력된 정보의 의미를 유지하고, 과장하거나 사실을 추가하지 마.
+7. 이모지, 마크다운, 인사말, JSON 바깥의 설명은 넣지 마.
+
+반드시 다음 JSON 형식으로만 반환해:
+{"title":"생성한 모임 제목","description":"생성한 상세 설명"}
 ''';
 
       final response = await model
           .generateContent([Content.text(prompt)])
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 20));
 
       var responseText = response.text?.trim() ?? '';
       if (responseText.isEmpty) {
         throw const FormatException(
-          'AI가 빈 응답을 반환했습니다. 키워드를 조금 더 구체적으로 입력한 뒤 다시 시도해 주세요.',
+          'AI가 빈 응답을 반환했습니다. 모임 주제나 설명을 조금 더 구체적으로 입력한 뒤 다시 시도해 주세요.',
         );
       }
 
+      // JSON 앞뒤에 불필요한 문자가 포함된 경우에도 JSON 본문만 추출합니다.
       final jsonStart = responseText.indexOf('{');
       final jsonEnd = responseText.lastIndexOf('}');
       if (jsonStart < 0 || jsonEnd <= jsonStart) {
-        throw const FormatException('AI 응답을 제목과 설명으로 변환하지 못했습니다. 다시 시도해 주세요.');
+        throw const FormatException(
+          'AI 응답에서 제목과 상세 설명을 읽지 못했습니다. 다시 시도해 주세요.',
+        );
       }
       responseText = responseText.substring(jsonStart, jsonEnd + 1);
 
@@ -638,29 +655,56 @@ class MapScreenState extends State<MapScreen> {
       try {
         decoded = jsonDecode(responseText);
       } on FormatException {
-        throw const FormatException('AI 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.');
+        throw const FormatException(
+          'AI 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.',
+        );
       }
 
       if (decoded is! Map) {
-        throw const FormatException('AI 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.');
+        throw const FormatException(
+          'AI 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.',
+        );
       }
 
       final generatedTitle = (decoded['title'] ?? '').toString().trim();
       final generatedDescription = (decoded['description'] ?? '')
           .toString()
           .trim();
+
       if (generatedTitle.isEmpty || generatedDescription.isEmpty) {
         throw const FormatException(
-          'AI가 제목 또는 설명을 완성하지 못했습니다. 입력 내용을 보완한 뒤 다시 시도해 주세요.',
+          'AI가 제목 또는 상세 설명을 완성하지 못했습니다. 입력 내용을 보완한 뒤 다시 시도해 주세요.',
         );
       }
 
-      _titleController.text = generatedTitle;
-      _noteController.text = generatedDescription;
-      showFeedback('AI가 모집글을 완성했습니다. 내용을 확인해 주세요.', isError: false);
+      // 두 결과를 각각 해당 입력란에 넣어 사용자가 다시 수정할 수 있게 합니다.
+      updateSheet(() {
+        _titleController.value = TextEditingValue(
+          text: generatedTitle,
+          selection: TextSelection.collapsed(offset: generatedTitle.length),
+        );
+        _noteController.value = TextEditingValue(
+          text: generatedDescription,
+          selection: TextSelection.collapsed(
+            offset: generatedDescription.length,
+          ),
+        );
+        _aiPolishFeedback = 'AI가 모임 제목과 상세 설명을 모두 작성했습니다. 내용을 확인하고 자유롭게 수정해 주세요.';
+        _aiPolishFeedbackIsError = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          const SnackBar(
+            content: Text('AI가 모임 제목과 상세 설명을 작성했습니다.'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } on TimeoutException {
       showFeedback(
-        'AI 응답 시간이 초과되었습니다(15초). 인터넷 연결이나 API 사용량을 확인한 뒤 다시 시도해 주세요.',
+        'AI 응답 시간이 초과되었습니다(20초). 인터넷 연결이나 API 사용량을 확인한 뒤 다시 시도해 주세요.',
         isError: true,
       );
     } catch (error, stackTrace) {
@@ -778,7 +822,7 @@ class MapScreenState extends State<MapScreen> {
     );
   }
 
-  // 💡 [다른 동네 검색] 동/읍/면 이름을 입력하면 그 위치로 지도 카메라를 이동시킵니다.
+  // 동/읍/면 이름을 입력하면 그 위치로 지도 카메라를 이동시킵니다.
   Future<void> _openLocationSearch() async {
     final result = await showDialog<LatLng>(
       context: context,
@@ -1470,7 +1514,7 @@ class MapScreenState extends State<MapScreen> {
     }
   }
 
-  // 🛡️ 인근 안심지킴이집(100m 이내) 확인 함수
+  // 인근 안심지킴이집(100m 이내) 확인 함수
   Future<Map<String, dynamic>> _checkNearestSafeZone(
     double meetupLat,
     double meetupLng,
@@ -1571,7 +1615,10 @@ class MapScreenState extends State<MapScreen> {
                 const SizedBox(height: 15),
                 TextField(
                   controller: _titleController,
-                  decoration: const InputDecoration(labelText: '제목 또는 핵심 키워드'),
+                  decoration: const InputDecoration(
+                    labelText: '모임 주제 또는 핵심 키워드 (선택)',
+                    hintText: '예: 주말 공원 산책, 보드게임 모임',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 Align(
@@ -1598,7 +1645,7 @@ class MapScreenState extends State<MapScreen> {
                           )
                         : const Icon(Icons.auto_awesome, size: 16),
                     label: Text(
-                      _isAiLoading ? 'AI 작성 중...' : 'AI 문장 다듬기 🪄',
+                      _isAiLoading ? 'AI 작성 중...' : 'AI 모집글 작성 🪄',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -1671,14 +1718,17 @@ class MapScreenState extends State<MapScreen> {
                 TextField(
                   controller: _noteController,
                   maxLines: 3,
-                  decoration: const InputDecoration(labelText: '상세 설명'),
+                  decoration: const InputDecoration(
+                    labelText: '상세 설명',
+                    hintText: '선택 사항이에요. 모임 주제만 입력해도 AI가 작성합니다.',
+                  ),
                 ),
                 const SizedBox(height: 20),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      "모집 정원: $_maxParticipants 명",
+                      "최대 참여 인원: $_maxParticipants 명",
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -1744,7 +1794,7 @@ class MapScreenState extends State<MapScreen> {
                           String savedRegion = '전체';
                           String savedDong = '동네 미상';
 
-                          // 💡 주소 변환(Geocoding) 실패 시 앱이 터지지 않도록 예외 처리
+                          // 주소 변환(Geocoding) 실패 시 앱이 터지지 않도록 예외 처리
                           try {
                             List<Placemark> placemarks =
                                 await placemarkFromCoordinates(
@@ -1850,7 +1900,7 @@ class MapScreenState extends State<MapScreen> {
                             print("주소 변환 실패(기본값 사용): $geoError");
                           }
 
-                          // 🛡️ 안심지킴이집 거리 검사 수행
+                          // 안심지킴이집 거리 검사 수행
                           Map<String, dynamic> safeCheck =
                               await _checkNearestSafeZone(
                                 pos.latitude,
@@ -1877,7 +1927,7 @@ class MapScreenState extends State<MapScreen> {
                             'lng': pos.longitude,
                             'region': savedRegion,
                             'dong': savedDong,
-                            'isSafeZone': safeCheck['isSafe'], // 🛡️ 안심 구역 여부
+                            'isSafeZone': safeCheck['isSafe'], // 안심 구역 여부
                             'safeZoneName': safeCheck['storeName'], // 편의점 이름
                             'safeZoneDistance':
                                 safeCheck['distance'], // 거리 (미터)
@@ -2039,7 +2089,7 @@ class MapScreenState extends State<MapScreen> {
       );
     }
 
-    // 🛡️ MultiStreamBuilder를 통해 모임 데이터와 안심지킴이집 데이터를 모두 불러옵니다.
+    // MultiStreamBuilder를 통해 모임 데이터와 안심지킴이집 데이터를 모두 불러옵니다.
     return MultiStreamBuilder(
       streams: [_meetingsStream, _safeZonesStream],
       builder: (context, snapshots) {
@@ -2071,7 +2121,7 @@ class MapScreenState extends State<MapScreen> {
           );
         }
 
-        // 🛡️ 안심지킴이집(방패 마커) 상시 노출
+        // 안심지킴이집(방패 마커) 상시 노출
         for (var doc in safeZoneDocs) {
           final data = doc.data() as Map<String, dynamic>;
           double lat = data['lat'] ?? 0.0;
@@ -2105,7 +2155,7 @@ class MapScreenState extends State<MapScreen> {
           }
         }
 
-        // ⚡ 기존 모임(번개) 마커 추가 로직
+        // 기존 모임(번개) 마커 추가 로직
         for (var doc in meetingDocs) {
           final data = doc.data() as Map<String, dynamic>? ?? {};
           final category = data['category'] ?? '기타';
@@ -2529,7 +2579,7 @@ class MapScreenState extends State<MapScreen> {
   }
 }
 
-// 🛡️ 여러 개의 Firestore Stream을 동시에 관리해주는 유틸리티 위젯
+// 여러 개의 Firestore Stream을 동시에 관리해주는 유틸리티 위젯
 class MultiStreamBuilder extends StatelessWidget {
   final List<Stream<QuerySnapshot>> streams;
   final Widget Function(BuildContext, List<AsyncSnapshot<QuerySnapshot>>)
